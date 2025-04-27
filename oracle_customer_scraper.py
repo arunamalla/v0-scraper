@@ -12,7 +12,7 @@ from data_manager import DataManager
 from rate_limiter import RateLimiter
 from robots_parser import RobotsParser
 from url_tracker import URLTracker
-from utils import safe_request
+from utils import safe_request, retry_request
 
 class OracleCustomerScraper:
     """Scrape Oracle customer success stories."""
@@ -94,29 +94,69 @@ class OracleCustomerScraper:
                     
                     # Click "See More" button until no more results
                     page_count = 1
-                    while True:
-                        see_more = page.locator("a[data-lbl*='see-more']")
-                        if see_more.count() == 0:
-                            self.logger.info("No more 'See More' buttons found")
-                            break
+                    consecutive_failures = 0
+                    max_consecutive_failures = 5
+                    max_pages = 1000  # Set a high limit to ensure we get all customers
+
+                    while page_count < max_pages:
+                        try:
+                            see_more = page.locator("a[data-lbl*='see-more']")
+                            if see_more.count() == 0:
+                                self.logger.info("No more 'See More' buttons found")
+                                break
+                                
+                            self.logger.info(f"Clicking 'See More' button (page {page_count})")
+                            see_more.first.click()
                             
-                        self.logger.info(f"Clicking 'See More' button (page {page_count})")
-                        see_more.first.click()
-                        time.sleep(5)  # Allow content to load
-                        page_count += 1
-                        
-                        # Extract data from the new page
-                        self._extract_customer_data(page)
-                        
-                        # Save checkpoint after each page
-                        self.url_tracker.save_checkpoint({
-                            'stage': 'customers_list',
-                            'page_count': page_count,
-                            'customers_count': len(self.customers_data)
-                        })
-                        
-                        # Save progress after each page
-                        self.data_manager.save_data(self.customers_data, output_file)
+                            # Wait for new content to load with increased timeout
+                            page.wait_for_timeout(8000)  # Wait 8 seconds for content to load
+                            
+                            # Check if new content was loaded by comparing customer count before and after
+                            customers_before = len(self.customers_data)
+                            self._extract_customer_data(page)
+                            customers_after = len(self.customers_data)
+                            
+                            if customers_after > customers_before:
+                                # New customers were found, reset failure counter
+                                consecutive_failures = 0
+                                self.logger.info(f"Found {customers_after - customers_before} new customers (total: {customers_after})")
+                            else:
+                                # No new customers found, increment failure counter
+                                consecutive_failures += 1
+                                self.logger.warning(f"No new customers found after clicking 'See More'. Attempt {consecutive_failures}/{max_consecutive_failures}")
+                                
+                                if consecutive_failures >= max_consecutive_failures:
+                                    self.logger.warning(f"Reached maximum consecutive failures ({max_consecutive_failures}). Stopping pagination.")
+                                    break
+                            
+                            page_count += 1
+                            
+                            # Save checkpoint after each page
+                            self.url_tracker.save_checkpoint({
+                                'stage': 'customers_list',
+                                'page_count': page_count,
+                                'customers_count': len(self.customers_data)
+                            })
+                            
+                            # Save progress after each page
+                            self.data_manager.save_data(self.customers_data, output_file)
+                            
+                        except Exception as e:
+                            self.error_handler.handle_error(e, f"Error during pagination (page {page_count})")
+                            consecutive_failures += 1
+                            
+                            if consecutive_failures >= max_consecutive_failures:
+                                self.logger.warning(f"Reached maximum consecutive failures ({max_consecutive_failures}). Stopping pagination.")
+                                break
+                                
+                            # Try to recover by refreshing the page if we've had multiple failures
+                            if consecutive_failures > 2:
+                                try:
+                                    self.logger.info("Attempting to refresh the page to recover")
+                                    page.reload()
+                                    page.wait_for_timeout(5000)  # Wait for page to reload
+                                except Exception as refresh_error:
+                                    self.error_handler.handle_error(refresh_error, "Error refreshing page")
                     
                     self.logger.info(f"Found {len(self.customers_data)} customer entries")
                     
@@ -131,6 +171,11 @@ class OracleCustomerScraper:
             # Clear checkpoint since we're done with this stage
             self.url_tracker.clear_checkpoint()
             
+            # If we didn't find many customers, try alternative methods
+            if len(self.customers_data) < 50:  # Arbitrary threshold
+                self.logger.warning(f"Only found {len(self.customers_data)} customers. Trying alternative methods.")
+                self._try_alternative_scraping_methods(output_file)
+            
             return self.customers_data
             
         except Exception as e:
@@ -144,42 +189,167 @@ class OracleCustomerScraper:
             page: Playwright page object
         """
         try:
-            soup = BeautifulSoup(page.content(), 'html.parser')
-            li_elements = soup.find_all("li", class_="rc05w3")
+            content = page.content()
+            soup = BeautifulSoup(content, 'html.parser')
             
-            self.logger.info(f"Found {len(li_elements)} customer entries on current page")
+            # Try different selectors for customer list items
+            selectors = [
+                "li.rc05w3",  # Original selector
+                "div.rc05w1 li",  # Alternative selector
+                "div.customer-card",  # Another possible selector
+                "div[data-customer]",  # Data attribute selector
+                "a[href*='/customers/']"  # Link-based selector
+            ]
             
-            for li in li_elements:
-                try:
-                    entry = {}
-                    
-                    # Extract title
-                    title_element = li.find("div", class_="rc05heading")
-                    entry["title"] = title_element.text.strip() if title_element else None
-                    
-                    # Extract industry
-                    industry_element = li.find("span", class_="rc05def")
-                    entry["industry"] = industry_element["title"] if industry_element and "title" in industry_element.attrs else None
-                    
-                    # Extract location
-                    location_spans = li.find_all("span", class_="rc05def")
-                    entry["location"] = location_spans[1]["title"] if len(location_spans) > 1 and "title" in location_spans[1].attrs else None
-                    
-                    # Extract company name and link
-                    link_element = li.find("a")
-                    if link_element:
-                        entry["company"] = link_element.get("data-lbl")
-                        link = link_element.get("href")
-                        if link and not link.startswith(("http://", "https://")):
-                            link = urljoin(self.base_url, link)
-                        entry["link"] = link
-                    
-                    # Only add if we have a valid link and it's not already in our data
-                    if entry.get("link") and not any(item.get("link") == entry.get("link") for item in self.customers_data):
-                        self.customers_data.append(entry)
+            found_items = False
+            
+            for selector in selectors:
+                elements = soup.select(selector)
                 
-                except Exception as e:
-                    self.error_handler.handle_error(e, "Error extracting customer data from list item")
+                if elements:
+                    self.logger.info(f"Found {len(elements)} customer entries using selector: {selector}")
+                    found_items = True
+                    
+                    for element in elements:
+                        try:
+                            entry = {}
+                            
+                            # Extract title - try different approaches
+                            title_element = element.find("div", class_="rc05heading") or element.find("h3") or element.find("h2")
+                            if title_element:
+                                entry["title"] = title_element.text.strip()
+                            elif hasattr(element, 'text'):
+                                # If no specific title element, use the text of the element itself
+                                entry["title"] = element.text.strip()
+                            
+                            # Extract industry
+                            industry_element = element.find("span", class_="rc05def") or element.find("span", class_="industry")
+                            if industry_element and "title" in industry_element.attrs:
+                                entry["industry"] = industry_element["title"]
+                            elif industry_element:
+                                entry["industry"] = industry_element.text.strip()
+                            
+                            # Extract location
+                            location_spans = element.find_all("span", class_="rc05def") or element.find_all("span", class_="location")
+                            if len(location_spans) > 1 and "title" in location_spans[1].attrs:
+                                entry["location"] = location_spans[1]["title"]
+                            elif len(location_spans) > 1:
+                                entry["location"] = location_spans[1].text.strip()
+                            
+                            # Extract link
+                            link_element = element.find("a") if element.name != 'a' else element
+                            if link_element:
+                                if element.name == 'a':
+                                    entry["company"] = link_element.text.strip()
+                                else:
+                                    entry["company"] = link_element.get("data-lbl", "")
+                            
+                            link = link_element.get("href", "")
+                            if link and not link.startswith(("http://", "https://")):
+                                link = urljoin(self.base_url, link)
+                            entry["link"] = link
+                        
+                        # Only add if we have a valid link and it's not already in our data
+                        if entry.get("link") and not any(item.get("link") == entry.get("link") for item in self.customers_data):
+                            self.customers_data.append(entry)
+                    
+                    except Exception as e:
+                        self.error_handler.handle_error(e, "Error extracting customer data from element")
+                
+                # If we found items with this selector, no need to try others
+                break
         
+        if not found_items:
+            self.logger.warning("No customer entries found with any selector")
+            
+            # Try to extract any links that might be customer links
+            for link in soup.find_all("a"):
+                href = link.get("href", "")
+                if '/customers/' in href and not href.endswith('/customers/'):
+                    # This might be a customer link
+                    full_url = urljoin(self.base_url, href)
+                    if not any(item.get("link") == full_url for item in self.customers_data):
+                        self.customers_data.append({
+                            "title": link.text.strip() or href.split('/')[-1].replace('-', ' ').title(),
+                            "link": full_url
+                        })
+    
+    except Exception as e:
+        self.error_handler.handle_error(e, "Error parsing page content")
+
+    def _try_alternative_scraping_methods(self, output_file):
+        """Try alternative methods to scrape customers if the main method fails.
+        
+        Args:
+            output_file: File to save the customer list to
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        self.logger.info("Trying alternative scraping methods")
+        
+        # Method 1: Try to access the sitemap
+        try:
+            self.logger.info("Attempting to scrape from sitemap")
+            sitemap_url = f"{self.base_url}/sitemap.xml"
+            response = safe_request(sitemap_url)
+            
+            if response and response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'xml')
+                urls = [loc.text for loc in soup.find_all('loc') if '/customers/' in loc.text]
+                
+                if urls:
+                    self.logger.info(f"Found {len(urls)} customer URLs in sitemap")
+                    
+                    # Process each URL
+                    for url in urls:
+                        if not any(item.get("link") == url for item in self.customers_data):
+                            # Extract customer name from URL
+                            customer_name = url.split('/')[-1].replace('-', ' ').title()
+                            
+                            entry = {
+                                "title": customer_name,
+                                "link": url
+                            }
+                            
+                            self.customers_data.append(entry)
+                    
+                    # Save the data
+                    self.data_manager.save_data(self.customers_data, output_file)
+                    return True
         except Exception as e:
-            self.error_handler.handle_error(e, "Error parsing page content")
+            self.error_handler.handle_error(e, "Error scraping from sitemap")
+        
+        # Method 2: Try to access the customer stories API if it exists
+        try:
+            self.logger.info("Attempting to scrape from API")
+            api_url = f"{self.base_url}/api/customers"
+            response = safe_request(api_url)
+            
+            if response and response.status_code == 200:
+                try:
+                    data = response.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        self.logger.info(f"Found {len(data)} customers from API")
+                        
+                        for customer in data:
+                            if isinstance(customer, dict):
+                                entry = {
+                                    "title": customer.get("name", "Unknown"),
+                                    "industry": customer.get("industry"),
+                                    "location": customer.get("location"),
+                                    "link": urljoin(self.base_url, customer.get("url", ""))
+                                }
+                                
+                                if entry["link"] and not any(item.get("link") == entry["link"] for item in self.customers_data):
+                                    self.customers_data.append(entry)
+                        
+                        # Save the data
+                        self.data_manager.save_data(self.customers_data, output_file)
+                        return True
+                except:
+                    pass
+        except Exception as e:
+            self.error_handler.handle_error(e, "Error scraping from API")
+        
+        return False

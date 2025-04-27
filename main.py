@@ -1,5 +1,6 @@
 import os
 import argparse
+import time
 from logger import Logger
 from error_handler import ErrorHandler
 from data_manager import DataManager
@@ -30,6 +31,8 @@ def parse_arguments():
                         help='Number of threads to use for parallel scraping (default: 5)')
     parser.add_argument('--no-resume', action='store_true',
                         help='Do not resume from previous checkpoint')
+    parser.add_argument('--min-customers', type=int, default=100,
+                        help='Minimum number of customers expected (default: 100)')
     
     return parser.parse_args()
 
@@ -63,14 +66,33 @@ def main():
     customers_data = []
     if not args.skip_customers:
         logger.info("Starting to scrape customers list")
-        oracle_scraper = OracleCustomerScraper(
-            rate_limit_seconds=args.rate_limit,
-            logger=logger,
-            error_handler=error_handler,
-            data_manager=data_manager,
-            url_tracker=url_tracker
-        )
-        customers_data = oracle_scraper.scrape_customers_list(output_file="customers_list.json", resume=resume)
+        
+        # Add retry mechanism
+        max_retries = 3
+        retry_count = 0
+        min_expected_customers = args.min_customers
+        
+        while retry_count < max_retries:
+            oracle_scraper = OracleCustomerScraper(
+                rate_limit_seconds=args.rate_limit,
+                logger=logger,
+                error_handler=error_handler,
+                data_manager=data_manager,
+                url_tracker=url_tracker
+            )
+            customers_data = oracle_scraper.scrape_customers_list(output_file="customers_list.json", resume=resume)
+            
+            if len(customers_data) >= min_expected_customers:
+                logger.info(f"Successfully scraped {len(customers_data)} customers")
+                break
+            
+            retry_count += 1
+            if retry_count < max_retries:
+                logger.warning(f"Only found {len(customers_data)} customers. Retrying ({retry_count}/{max_retries})...")
+                time.sleep(60)  # Wait a minute before retrying
+        
+        if len(customers_data) < min_expected_customers:
+            logger.warning(f"Could only find {len(customers_data)} customers after {max_retries} attempts. Continuing with what we have.")
     else:
         logger.info("Skipping customers list scraping, loading from file")
         customers_data = data_manager.load_data("customers_list.json") or []
