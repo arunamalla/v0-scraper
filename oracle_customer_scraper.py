@@ -3,18 +3,22 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 import time
 from urllib.parse import urljoin
+import concurrent.futures
+from typing import List, Dict, Any, Set
 
 from logger import Logger
 from error_handler import ErrorHandler
 from data_manager import DataManager
 from rate_limiter import RateLimiter
 from robots_parser import RobotsParser
+from url_tracker import URLTracker
+from utils import safe_request
 
 class OracleCustomerScraper:
     """Scrape Oracle customer success stories."""
     
     def __init__(self, base_url="https://www.oracle.com", customers_path="/customers/", 
-                 rate_limit_seconds=3, logger=None, error_handler=None, data_manager=None):
+                 rate_limit_seconds=3, logger=None, error_handler=None, data_manager=None, url_tracker=None):
         """Initialize the Oracle customer scraper.
         
         Args:
@@ -24,6 +28,7 @@ class OracleCustomerScraper:
             logger: Logger instance
             error_handler: ErrorHandler instance
             data_manager: DataManager instance
+            url_tracker: URLTracker instance
         """
         self.base_url = base_url
         self.customers_url = urljoin(base_url, customers_path)
@@ -32,15 +37,16 @@ class OracleCustomerScraper:
         self.data_manager = data_manager or DataManager(logger=self.logger, error_handler=self.error_handler)
         self.rate_limiter = RateLimiter(rate_limit_seconds, self.logger)
         self.robots_parser = RobotsParser(self.logger, self.error_handler)
+        self.url_tracker = url_tracker or URLTracker(logger=self.logger, error_handler=self.error_handler)
         
-        self.visited_urls = set()
         self.customers_data = []
     
-    def scrape_customers_list(self, output_file="customers_list.json"):
+    def scrape_customers_list(self, output_file="customers_list.json", resume=True):
         """Scrape the main customers page to get a list of all customers.
         
         Args:
             output_file: File to save the customer list to
+            resume: Whether to resume from a checkpoint
             
         Returns:
             List of customer data
@@ -52,11 +58,17 @@ class OracleCustomerScraper:
             self.logger.error(f"Crawling not allowed for {self.customers_url}")
             return []
         
-        if self.customers_url in self.visited_urls:
-            self.logger.info(f"Already visited {self.customers_url}, skipping")
-            return self.customers_data
-            
-        self.visited_urls.add(self.customers_url)
+        # Load existing data if resuming
+        if resume:
+            checkpoint = self.url_tracker.load_checkpoint()
+            if checkpoint and checkpoint.get('stage') == 'customers_list':
+                self.logger.info("Resuming customer list scraping from checkpoint")
+                self.customers_data = self.data_manager.load_data(output_file) or []
+                
+                # If we have data, we can skip the initial scraping
+                if self.customers_data:
+                    self.logger.info(f"Loaded {len(self.customers_data)} customers from previous session")
+                    return self.customers_data
         
         try:
             with sync_playwright() as p:
@@ -69,6 +81,16 @@ class OracleCustomerScraper:
                     
                     # Initial data extraction
                     self._extract_customer_data(page)
+                    
+                    # Save checkpoint after initial extraction
+                    self.url_tracker.save_checkpoint({
+                        'stage': 'customers_list',
+                        'page_count': 1,
+                        'customers_count': len(self.customers_data)
+                    })
+                    
+                    # Save progress
+                    self.data_manager.save_data(self.customers_data, output_file)
                     
                     # Click "See More" button until no more results
                     page_count = 1
@@ -86,6 +108,13 @@ class OracleCustomerScraper:
                         # Extract data from the new page
                         self._extract_customer_data(page)
                         
+                        # Save checkpoint after each page
+                        self.url_tracker.save_checkpoint({
+                            'stage': 'customers_list',
+                            'page_count': page_count,
+                            'customers_count': len(self.customers_data)
+                        })
+                        
                         # Save progress after each page
                         self.data_manager.save_data(self.customers_data, output_file)
                     
@@ -98,6 +127,10 @@ class OracleCustomerScraper:
             
             # Final save
             self.data_manager.save_data(self.customers_data, output_file)
+            
+            # Clear checkpoint since we're done with this stage
+            self.url_tracker.clear_checkpoint()
+            
             return self.customers_data
             
         except Exception as e:
