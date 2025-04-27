@@ -39,15 +39,28 @@ class RobotsParser:
             robots_url = f"{domain}/robots.txt"
             self.logger.info(f"Fetching robots.txt from {robots_url}")
             
-            response = requests.get(robots_url, timeout=10)
-            if response.status_code == 200:
-                robots_content = response.text
-                self.robots_cache[domain] = robots_content
-                return robots_content
-            else:
-                self.logger.warning(f"Failed to fetch robots.txt from {robots_url}: {response.status_code}")
+            try:
+                # First try with SSL verification
+                response = requests.get(robots_url, timeout=10)
+                if response.status_code == 200:
+                    robots_content = response.text
+                    self.robots_cache[domain] = robots_content
+                    return robots_content
+            except requests.exceptions.SSLError as ssl_err:
+                # If SSL verification fails, try again without verification
+                self.logger.warning(f"SSL verification failed for {robots_url}, retrying without verification")
+                response = requests.get(robots_url, timeout=10, verify=False)
+                if response.status_code == 200:
+                    robots_content = response.text
+                    self.robots_cache[domain] = robots_content
+                    return robots_content
+            except requests.RequestException as req_err:
+                self.logger.warning(f"Failed to fetch robots.txt from {robots_url}: {req_err}")
                 return ""
-                
+            
+            self.logger.warning(f"Failed to fetch robots.txt from {robots_url}: {response.status_code}")
+            return ""
+            
         except Exception as e:
             self.error_handler.handle_request_error(e, url, "Robots.txt fetch")
             return ""

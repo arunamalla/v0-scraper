@@ -6,6 +6,7 @@ from data_manager import DataManager
 from oracle_customer_scraper import OracleCustomerScraper
 from customer_detail_scraper import CustomerDetailScraper
 from job_scraper import JobScraper
+from url_tracker import URLTracker
 
 def parse_arguments():
     """Parse command line arguments."""
@@ -25,6 +26,10 @@ def parse_arguments():
                         help='Skip scraping customer details')
     parser.add_argument('--skip-careers', action='store_true',
                         help='Skip scraping career URLs')
+    parser.add_argument('--threads', type=int, default=5,
+                        help='Number of threads to use for parallel scraping (default: 5)')
+    parser.add_argument('--no-resume', action='store_true',
+                        help='Do not resume from previous checkpoint')
     
     return parser.parse_args()
 
@@ -41,11 +46,18 @@ def main():
     logger = Logger(args.log_dir)
     error_handler = ErrorHandler(logger)
     data_manager = DataManager(args.data_dir, logger, error_handler)
+    url_tracker = URLTracker(args.data_dir, logger, error_handler)
+    
+    # Display warning about SSL verification
+    logger.warning("SSL certificate verification will be disabled for sites with certificate issues. This is less secure but necessary for scraping some sites.")
     
     # File paths
     customers_file = os.path.join(args.data_dir, "customers_list.json")
     details_file = os.path.join(args.data_dir, "customer_details.json")
     careers_file = os.path.join(args.data_dir, "career_urls.json")
+    
+    # Check if we should resume
+    resume = not args.no_resume
     
     # Step 1: Scrape the list of customers
     customers_data = []
@@ -55,9 +67,10 @@ def main():
             rate_limit_seconds=args.rate_limit,
             logger=logger,
             error_handler=error_handler,
-            data_manager=data_manager
+            data_manager=data_manager,
+            url_tracker=url_tracker
         )
-        customers_data = oracle_scraper.scrape_customers_list(output_file="customers_list.json")
+        customers_data = oracle_scraper.scrape_customers_list(output_file="customers_list.json", resume=resume)
     else:
         logger.info("Skipping customers list scraping, loading from file")
         customers_data = data_manager.load_data("customers_list.json") or []
@@ -70,12 +83,15 @@ def main():
             rate_limit_seconds=args.rate_limit,
             logger=logger,
             error_handler=error_handler,
-            data_manager=data_manager
+            data_manager=data_manager,
+            url_tracker=url_tracker
         )
         customer_details = detail_scraper.scrape_customer_details(
             customers_data,
             output_file="customer_details.json",
-            limit=args.limit
+            limit=args.limit,
+            max_workers=args.threads,
+            resume=resume
         )
     else:
         logger.info("Skipping customer details scraping, loading from file")
@@ -88,12 +104,15 @@ def main():
             rate_limit_seconds=args.rate_limit,
             logger=logger,
             error_handler=error_handler,
-            data_manager=data_manager
+            data_manager=data_manager,
+            url_tracker=url_tracker
         )
         job_scraper.scrape_career_urls(
             customer_details,
             output_file="career_urls.json",
-            limit=args.limit
+            limit=args.limit,
+            max_workers=args.threads,
+            resume=resume
         )
     
     logger.info("Scraping completed")

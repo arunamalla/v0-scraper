@@ -1,17 +1,22 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import concurrent.futures
+from typing import List, Dict, Any, Set
+import threading
 
 from logger import Logger
 from error_handler import ErrorHandler
 from data_manager import DataManager
 from rate_limiter import RateLimiter
 from robots_parser import RobotsParser
+from url_tracker import URLTracker
+from utils import safe_request
 
 class CustomerDetailScraper:
     """Scrape detailed information for each customer."""
     
-    def __init__(self, rate_limit_seconds=3, logger=None, error_handler=None, data_manager=None):
+    def __init__(self, rate_limit_seconds=3, logger=None, error_handler=None, data_manager=None, url_tracker=None):
         """Initialize the customer detail scraper.
         
         Args:
@@ -19,23 +24,27 @@ class CustomerDetailScraper:
             logger: Logger instance
             error_handler: ErrorHandler instance
             data_manager: DataManager instance
+            url_tracker: URLTracker instance
         """
         self.logger = logger or Logger()
         self.error_handler = error_handler or ErrorHandler(self.logger)
         self.data_manager = data_manager or DataManager(logger=self.logger, error_handler=self.error_handler)
         self.rate_limiter = RateLimiter(rate_limit_seconds, self.logger)
         self.robots_parser = RobotsParser(self.logger, self.error_handler)
+        self.url_tracker = url_tracker or URLTracker(logger=self.logger, error_handler=self.error_handler)
         
-        self.visited_urls = set()
         self.customer_details = []
+        self.lock = threading.Lock()  # Lock for thread safety
     
-    def scrape_customer_details(self, customers_data, output_file="customer_details.json", limit=None):
+    def scrape_customer_details(self, customers_data, output_file="customer_details.json", limit=None, max_workers=5, resume=True):
         """Scrape detailed information for each customer.
         
         Args:
             customers_data: List of customer data from OracleCustomerScraper
             output_file: File to save the customer details to
             limit: Maximum number of customers to process
+            max_workers: Maximum number of worker threads
+            resume: Whether to resume from a checkpoint
             
         Returns:
             List of customer details
@@ -44,49 +53,116 @@ class CustomerDetailScraper:
             self.logger.error("No customer data provided")
             return []
         
-        self.logger.info(f"Scraping details for {len(customers_data) if limit is None else min(limit, len(customers_data))} customers")
+        # Load existing data if resuming
+        if resume:
+            checkpoint = self.url_tracker.load_checkpoint()
+            if checkpoint and checkpoint.get('stage') == 'customer_details':
+                self.logger.info("Resuming customer details scraping from checkpoint")
+                self.customer_details = self.data_manager.load_data(output_file) or []
+                
+                # Get the last processed index
+                last_index = checkpoint.get('last_index', 0)
+                
+                # If we have data and haven't finished, we can skip some customers
+                if self.customer_details and last_index < len(customers_data):
+                    self.logger.info(f"Loaded {len(self.customer_details)} customer details from previous session")
+                    self.logger.info(f"Resuming from index {last_index}")
+                    
+                    # Adjust customers_data to start from where we left off
+                    customers_data = customers_data[last_index:]
         
         # Process only a subset if limit is specified
         customers_to_process = customers_data[:limit] if limit is not None else customers_data
         
-        for i, customer in enumerate(customers_to_process):
+        # Filter out already visited URLs
+        unvisited_customers = []
+        for customer in customers_to_process:
             link = customer.get("link")
-            if not link:
-                self.logger.warning(f"No link found for customer {i}")
-                continue
-                
-            if link in self.visited_urls:
-                self.logger.info(f"Already visited {link}, skipping")
-                continue
-                
-            self.logger.info(f"Processing customer {i+1}/{len(customers_to_process)}: {customer.get('title')}")
+            if link and not self.url_tracker.is_customer_url_visited(link):
+                unvisited_customers.append(customer)
+        
+        self.logger.info(f"Scraping details for {len(unvisited_customers)} unvisited customers out of {len(customers_to_process)} total")
+        
+        # Use ThreadPoolExecutor for parallel processing
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit tasks
+            future_to_customer = {
+                executor.submit(self._process_customer, i, customer, len(unvisited_customers), output_file): customer
+                for i, customer in enumerate(unvisited_customers)
+            }
             
-            # Check if crawling is allowed
-            if not self.robots_parser.is_allowed('*', link):
-                self.logger.warning(f"Crawling not allowed for {link}")
-                continue
-            
-            try:
-                # Apply rate limiting
-                self.rate_limiter.limit()
-                
-                # Scrape customer details
-                customer_details = self._scrape_single_customer(link)
-                
-                if customer_details:
-                    # Merge the basic customer data with the detailed data
-                    merged_data = {**customer, **customer_details}
-                    self.customer_details.append(merged_data)
-                    
-                    # Save after each successful scrape to avoid losing data
-                    self.data_manager.save_data(self.customer_details, output_file)
-                    
-            except Exception as e:
-                self.error_handler.handle_error(e, f"Error processing customer {customer.get('title')}")
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_customer):
+                customer = future_to_customer[future]
+                try:
+                    future.result()  # This will re-raise any exceptions from the thread
+                except Exception as e:
+                    self.error_handler.handle_error(e, f"Error processing customer {customer.get('title')}")
         
         # Final save
         self.data_manager.save_data(self.customer_details, output_file)
+        
+        # Clear checkpoint since we're done with this stage
+        self.url_tracker.clear_checkpoint()
+        
         return self.customer_details
+    
+    def _process_customer(self, index, customer, total, output_file):
+        """Process a single customer.
+        
+        Args:
+            index: Index of the customer in the list
+            customer: Customer data
+            total: Total number of customers
+            output_file: File to save the customer details to
+        """
+        link = customer.get("link")
+        if not link:
+            self.logger.warning(f"No link found for customer {index}")
+            return
+        
+        # Check if we've already visited this URL
+        if self.url_tracker.is_customer_url_visited(link):
+            self.logger.info(f"Already visited {link}, skipping")
+            return
+        
+        self.logger.info(f"Processing customer {index+1}/{total}: {customer.get('title')}")
+        
+        # Check if crawling is allowed
+        if not self.robots_parser.is_allowed('*', link):
+            self.logger.warning(f"Crawling not allowed for {link}")
+            return
+        
+        try:
+            # Apply rate limiting
+            self.rate_limiter.limit()
+            
+            # Scrape customer details
+            customer_details = self._scrape_single_customer(link)
+            
+            if customer_details:
+                # Merge the basic customer data with the detailed data
+                merged_data = {**customer, **customer_details}
+                
+                # Thread-safe update of customer_details list
+                with self.lock:
+                    self.customer_details.append(merged_data)
+                    
+                    # Save checkpoint
+                    self.url_tracker.save_checkpoint({
+                        'stage': 'customer_details',
+                        'last_index': index,
+                        'customers_count': len(self.customer_details)
+                    })
+                    
+                    # Save after each successful scrape to avoid losing data
+                    self.data_manager.save_data(self.customer_details, output_file)
+                
+                # Mark this URL as visited
+                self.url_tracker.add_customer_url(link)
+                
+        except Exception as e:
+            self.error_handler.handle_error(e, f"Error processing customer {customer.get('title')}")
     
     def _scrape_single_customer(self, url):
         """Scrape detailed information for a single customer.
@@ -97,12 +173,13 @@ class CustomerDetailScraper:
         Returns:
             Dictionary of customer details
         """
-        self.visited_urls.add(url)
-        
         try:
             self.logger.info(f"Fetching {url}")
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
+            response = safe_request(url, timeout=30)
+            
+            if not response:
+                self.logger.error(f"Failed to fetch {url}")
+                return {}
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
