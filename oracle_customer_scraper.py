@@ -243,39 +243,39 @@ class OracleCustomerScraper:
                                     entry["company"] = link_element.text.strip()
                                 else:
                                     entry["company"] = link_element.get("data-lbl", "")
+                                
+                                link = link_element.get("href", "")
+                                if link and not link.startswith(("http://", "https://")):
+                                    link = urljoin(self.base_url, link)
+                                entry["link"] = link
                             
-                            link = link_element.get("href", "")
-                            if link and not link.startswith(("http://", "https://")):
-                                link = urljoin(self.base_url, link)
-                            entry["link"] = link
+                            # Only add if we have a valid link and it's not already in our data
+                            if entry.get("link") and not any(item.get("link") == entry.get("link") for item in self.customers_data):
+                                self.customers_data.append(entry)
                         
-                        # Only add if we have a valid link and it's not already in our data
-                        if entry.get("link") and not any(item.get("link") == entry.get("link") for item in self.customers_data):
-                            self.customers_data.append(entry)
+                        except Exception as e:
+                            self.error_handler.handle_error(e, "Error extracting customer data from element")
                     
-                    except Exception as e:
-                        self.error_handler.handle_error(e, "Error extracting customer data from element")
-                
-                # If we found items with this selector, no need to try others
-                break
-        
-        if not found_items:
-            self.logger.warning("No customer entries found with any selector")
+                    # If we found items with this selector, no need to try others
+                    break
             
-            # Try to extract any links that might be customer links
-            for link in soup.find_all("a"):
-                href = link.get("href", "")
-                if '/customers/' in href and not href.endswith('/customers/'):
-                    # This might be a customer link
-                    full_url = urljoin(self.base_url, href)
-                    if not any(item.get("link") == full_url for item in self.customers_data):
-                        self.customers_data.append({
-                            "title": link.text.strip() or href.split('/')[-1].replace('-', ' ').title(),
-                            "link": full_url
-                        })
-    
-    except Exception as e:
-        self.error_handler.handle_error(e, "Error parsing page content")
+            if not found_items:
+                self.logger.warning("No customer entries found with any selector")
+                
+                # Try to extract any links that might be customer links
+                for link in soup.find_all("a"):
+                    href = link.get("href", "")
+                    if '/customers/' in href and not href.endswith('/customers/'):
+                        # This might be a customer link
+                        full_url = urljoin(self.base_url, href)
+                        if not any(item.get("link") == full_url for item in self.customers_data):
+                            self.customers_data.append({
+                                "title": link.text.strip() or href.split('/')[-1].replace('-', ' ').title(),
+                                "link": full_url
+                            })
+        
+        except Exception as e:
+            self.error_handler.handle_error(e, "Error parsing page content")
 
     def _try_alternative_scraping_methods(self, output_file):
         """Try alternative methods to scrape customers if the main method fails.
