@@ -1,30 +1,83 @@
-# Scrape Oracle Customer Success
+# Oracle Customer Success Scraper
 
-*Automatically synced with your [v0.dev](https://v0.dev) deployments*
+This project scrapes customer success stories from Oracle's website and extracts career URLs from customer websites.
 
-[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/aruna-mallas-projects/v0-scrape-oracle-customer-success)
-[![Built with v0](https://img.shields.io/badge/Built%20with-v0.dev-black?style=for-the-badge)](https://v0.dev/chat/projects/FfzQV6VYQ74)
+## Features
 
-## Overview
+- Scrapes the Oracle Customers page to get a list of all customers
+- Extracts detailed information for each customer
+- Finds career URLs on customer websites
+- Respects robots.txt and implements rate limiting
+- Modular design with separate components for different responsibilities
 
-This repository will stay in sync with your deployed chats on [v0.dev](https://v0.dev).
-Any changes you make to your deployed app will be automatically pushed to this repository from [v0.dev](https://v0.dev).
+## Project Structure
 
-## Deployment
+- `main.py`: Entry point for the scraper
+- `logger.py`: Handles logging
+- `error_handler.py`: Handles errors
+- `data_manager.py`: Manages data storage and retrieval
+- `rate_limiter.py`: Implements rate limiting
+- `robots_parser.py`: Checks if crawling is allowed
+- `oracle_customer_scraper.py`: Scrapes the main Oracle customers page
+- `customer_detail_scraper.py`: Scrapes individual customer pages
+- `job_scraper.py`: Extracts career URLs from customer websites
 
-Your project is live at:
+## Setup
 
-**[https://vercel.com/aruna-mallas-projects/v0-scrape-oracle-customer-success](https://vercel.com/aruna-mallas-projects/v0-scrape-oracle-customer-success)**
+1. Install dependencies:
 
-## Build your app
+\`\`\`bash
+pip install requests beautifulsoup4 playwright
+playwright install chromium
+\`\`\`
 
-Continue building your app on:
+2. Create directories:
 
-**[https://v0.dev/chat/projects/FfzQV6VYQ74](https://v0.dev/chat/projects/FfzQV6VYQ74)**
+\`\`\`bash
+mkdir -p data logs
+\`\`\`
 
-## How It Works
+3. Run the scraper:
 
-1. Create and modify your project using [v0.dev](https://v0.dev)
-2. Deploy your chats from the v0 interface
-3. Changes are automatically pushed to this repository
-4. Vercel deploys the latest version from this repository
+\`\`\`bash
+python main.py
+\`\`\`
+
+## Command Line Arguments
+
+- `--rate-limit`: Rate limit in seconds between requests (default: 3)
+- `--limit`: Limit the number of customers to process (default: all)
+- `--data-dir`: Directory to store data files (default: data)
+- `--log-dir`: Directory to store log files (default: logs)
+- `--skip-customers`: Skip scraping the customers list
+- `--skip-details`: Skip scraping customer details
+- `--skip-careers`: Skip scraping career URLs
+
+## Example Usage
+
+Scrape everything:
+\`\`\`bash
+python main.py
+\`\`\`
+
+Scrape only the first 10 customers:
+\`\`\`bash
+python main.py --limit 10
+\`\`\`
+
+Skip scraping the customers list and use existing data:
+\`\`\`bash
+python main.py --skip-customers
+\`\`\`
+
+## Output Files
+
+- `data/customers_list.json`: List of all customers
+- `data/customer_details.json`: Detailed information for each customer
+- `data/career_urls.json`: Career URLs for each customer
+
+## Notes
+
+- This scraper is designed to be respectful of servers by implementing rate limiting
+- Always check robots.txt before scraping any website
+- This is for educational purposes only
