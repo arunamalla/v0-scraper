@@ -1,12 +1,14 @@
 # Oracle Customer Success Scraper
 
-This project scrapes customer success stories from Oracle's website and extracts career URLs from customer websites.
+This project scrapes customer success stories from Oracle's website, extracts career URLs from customer websites, collects job listings from those career pages, and gathers detailed job descriptions from individual job postings.
 
 ## Features
 
 - Scrapes the Oracle Customers page to get a list of all customers
 - Extracts detailed information for each customer
 - Finds career URLs on customer websites
+- Scrapes job listings from career pages
+- Extracts detailed job descriptions from individual job postings
 - Respects robots.txt and implements rate limiting
 - Handles SSL certificate verification issues
 - Uses multithreading for faster scraping
@@ -26,6 +28,8 @@ This project scrapes customer success stories from Oracle's website and extracts
 - `oracle_customer_scraper.py`: Scrapes the main Oracle customers page
 - `customer_detail_scraper.py`: Scrapes individual customer pages
 - `job_scraper.py`: Extracts career URLs from customer websites
+- `job_listings_scraper.py`: Scrapes job listings from career pages
+- `job_detail_scraper.py`: Scrapes detailed job descriptions from individual job postings
 - `utils.py`: Utility functions for making requests with SSL fallback
 
 ## Setup
@@ -58,8 +62,11 @@ python main.py
 - `--skip-customers`: Skip scraping the customers list
 - `--skip-details`: Skip scraping customer details
 - `--skip-careers`: Skip scraping career URLs
+- `--skip-job-listings`: Skip scraping job listings
+- `--skip-job-details`: Skip scraping job details
 - `--threads`: Number of threads to use for parallel scraping (default: 5)
 - `--no-resume`: Do not resume from previous checkpoint
+- `--min-customers`: Minimum number of customers expected (default: 100)
 
 ## Example Usage
 
@@ -88,18 +95,52 @@ Start from scratch (don't resume):
 python main.py --no-resume
 \`\`\`
 
+Only scrape job listings from existing career URLs:
+\`\`\`bash
+python main.py --skip-customers --skip-details --skip-careers
+\`\`\`
+
+Only scrape job details from existing job listings:
+\`\`\`bash
+python main.py --skip-customers --skip-details --skip-careers --skip-job-listings
+\`\`\`
+
 ## Output Files
 
 - `data/customers_list.json`: List of all customers
 - `data/customer_details.json`: Detailed information for each customer
 - `data/career_urls.json`: Career URLs for each customer
+- `data/job_listings.json`: Job listings from career pages
+- `data/job_details.json`: Detailed job descriptions from individual job postings
 - `data/visited_customer_urls.json`: Tracking of visited customer URLs
 - `data/visited_job_urls.json`: Tracking of visited job URLs
 - `data/scraper_checkpoint.json`: Checkpoint for resuming scraping
 
+## Job Details Extraction
+
+The job detail scraper extracts the following information from job postings:
+
+- Full job description
+- Job responsibilities
+- Job requirements/qualifications
+- Benefits and perks
+- Application instructions
+- Company information
+- Salary information (when available)
+- Contact information
+- Application deadline
+- Employment type
+
+The scraper uses multiple methods to extract this information:
+
+1. Section-based extraction using common section identifiers and selectors
+2. Structured data extraction from JSON-LD
+3. Content splitting based on headings
+4. Regular expression patterns for specific information like contact details and salary
+
 ## Multithreading
 
-The scraper uses Python's `concurrent.futures` module with ThreadPoolExecutor to parallelize the scraping process. This significantly speeds up the scraping of customer details and career URLs. The number of threads can be controlled with the `--threads` command-line argument.
+The scraper uses Python's `concurrent.futures` module with ThreadPoolExecutor to parallelize the scraping process. This significantly speeds up the scraping of customer details, career URLs, job listings, and job details. The number of threads can be controlled with the `--threads` command-line argument.
 
 ## Resume Functionality
 

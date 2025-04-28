@@ -7,6 +7,8 @@ from data_manager import DataManager
 from oracle_customer_scraper import OracleCustomerScraper
 from customer_detail_scraper import CustomerDetailScraper
 from job_scraper import JobScraper
+from job_listings_scraper import JobListingsScraper
+from job_detail_scraper import JobDetailScraper
 from url_tracker import URLTracker
 
 def parse_arguments():
@@ -27,6 +29,10 @@ def parse_arguments():
                         help='Skip scraping customer details')
     parser.add_argument('--skip-careers', action='store_true',
                         help='Skip scraping career URLs')
+    parser.add_argument('--skip-job-listings', action='store_true',
+                        help='Skip scraping job listings')
+    parser.add_argument('--skip-job-details', action='store_true',
+                        help='Skip scraping job details')
     parser.add_argument('--threads', type=int, default=5,
                         help='Number of threads to use for parallel scraping (default: 5)')
     parser.add_argument('--no-resume', action='store_true',
@@ -58,6 +64,8 @@ def main():
     customers_file = os.path.join(args.data_dir, "customers_list.json")
     details_file = os.path.join(args.data_dir, "customer_details.json")
     careers_file = os.path.join(args.data_dir, "career_urls.json")
+    job_listings_file = os.path.join(args.data_dir, "job_listings.json")
+    job_details_file = os.path.join(args.data_dir, "job_details.json")
     
     # Check if we should resume
     resume = not args.no_resume
@@ -120,6 +128,7 @@ def main():
         customer_details = data_manager.load_data("customer_details.json") or []
     
     # Step 3: Scrape career URLs
+    career_urls = []
     if not args.skip_careers and customer_details:
         logger.info("Starting to scrape career URLs")
         job_scraper = JobScraper(
@@ -129,13 +138,58 @@ def main():
             data_manager=data_manager,
             url_tracker=url_tracker
         )
-        job_scraper.scrape_career_urls(
+        career_urls = job_scraper.scrape_career_urls(
             customer_details,
             output_file="career_urls.json",
             limit=args.limit,
             max_workers=args.threads,
             resume=resume
         )
+    else:
+        logger.info("Skipping career URLs scraping, loading from file")
+        career_urls = data_manager.load_data("career_urls.json") or []
+    
+    # Step 4: Scrape job listings
+    job_listings = []
+    if not args.skip_job_listings and career_urls:
+        logger.info("Starting to scrape job listings")
+        job_listings_scraper = JobListingsScraper(
+            rate_limit_seconds=args.rate_limit,
+            logger=logger,
+            error_handler=error_handler,
+            data_manager=data_manager,
+            url_tracker=url_tracker
+        )
+        job_listings = job_listings_scraper.scrape_job_listings(
+            career_urls_file="career_urls.json",
+            output_file="job_listings.json",
+            limit=args.limit,
+            max_workers=args.threads,
+            resume=resume
+        )
+    else:
+        logger.info("Skipping job listings scraping, loading from file")
+        job_listings = data_manager.load_data("job_listings.json") or []
+    
+    # Step 5: Scrape job details
+    if not args.skip_job_details and job_listings:
+        logger.info("Starting to scrape job details")
+        job_detail_scraper = JobDetailScraper(
+            rate_limit_seconds=args.rate_limit,
+            logger=logger,
+            error_handler=error_handler,
+            data_manager=data_manager,
+            url_tracker=url_tracker
+        )
+        job_detail_scraper.scrape_job_details(
+            job_listings_file="job_listings.json",
+            output_file="job_details.json",
+            limit=args.limit,
+            max_workers=args.threads,
+            resume=resume
+        )
+    else:
+        logger.info("Skipping job details scraping")
     
     logger.info("Scraping completed")
 
