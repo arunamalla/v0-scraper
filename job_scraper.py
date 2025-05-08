@@ -197,54 +197,170 @@ class JobScraper:
         try:
             self.logger.info(f"Fetching {company_url}")
             response = safe_request(company_url, timeout=30)
-            
+        
             if not response:
                 self.logger.error(f"Failed to fetch {company_url}")
                 return None
-            
+        
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Method 1: Look for common career page links
-            career_keywords = ['career', 'careers', 'jobs', 'job', 'join', 'work with us', 'employment', 'opportunities']
-            
+        
+            # Method 1: Look for common career page links with expanded keywords
+            career_keywords = [
+                'career', 'careers', 'jobs', 'job', 'join', 'work with us', 'employment', 
+                'opportunities', 'join our team', 'work for us', 'join the team', 
+                'current openings', 'open positions', 'job opportunities', 'career opportunities',
+                'we\'re hiring', 'job openings', 'vacancies', 'positions', 'recruitment',
+                'join us', 'apply now', 'apply today', 'job search', 'career search'
+            ]
+        
             for link in soup.find_all('a'):
                 href = link.get('href')
                 text = link.get_text().lower().strip()
-                
+            
                 if not href:
                     continue
-                
+            
                 # Check if the link text contains career keywords
                 if any(keyword in text for keyword in career_keywords):
                     # Make sure the URL is absolute
                     if not href.startswith(('http://', 'https://')):
                         href = urljoin(company_url, href)
-                
+            
                     self.logger.info(f"Found career URL via keywords: {href}")
                     return href
-            
-            # Method 2: Check common career URL patterns
+        
+            # Method 2: Check common career URL patterns with expanded patterns
             parsed_url = urlparse(company_url)
             base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-            
-            for pattern in self.career_patterns:
+        
+            career_patterns = [
+                r'/careers/?$',
+                r'/jobs/?$',
+                r'/join-us/?$',
+                r'/work-with-us/?$',
+                r'/employment/?$',
+                r'/opportunities/?$',
+                r'/join-our-team/?$',
+                r'/work-for-us/?$',
+                r'/join-the-team/?$',
+                r'/current-openings/?$',
+                r'/open-positions/?$',
+                r'/job-opportunities/?$',
+                r'/career-opportunities/?$',
+                r'/were-hiring/?$',
+                r'/job-openings/?$',
+                r'/vacancies/?$',
+                r'/positions/?$',
+                r'/recruitment/?$',
+                r'/apply-now/?$',
+                r'/apply-today/?$',
+                r'/job-search/?$',
+                r'/career-search/?$',
+                r'/about-us/careers/?$',
+                r'/about/careers/?$',
+                r'/company/careers/?$',
+                r'/en/careers/?$',
+                r'/us/careers/?$'
+            ]
+        
+            for pattern in career_patterns:
                 career_url = urljoin(base_url, re.sub(r'^/', '', pattern))
-                
+            
                 try:
                     # Check if the URL exists
                     self.rate_limiter.limit()
                     head_response = safe_request(career_url, method='head', timeout=10)
-                    
+                
                     if head_response and head_response.status_code < 400:
                         self.logger.info(f"Found career URL via pattern: {career_url}")
                         return career_url
                 except:
                     # Ignore errors when checking pattern URLs
                     pass
+        
+            # Method 3: Check for links to common job platforms
+            job_platform_domains = [
+                'workday.com', 'lever.co', 'greenhouse.io', 'recruitee.com',
+                'jobvite.com', 'smartrecruiters.com', 'taleo.net', 'brassring.com',
+                'icims.com', 'successfactors.com', 'bamboohr.com', 'paylocity.com',
+                'applytojob.com', 'recruitingbypaycor.com', 'ultipro.com', 'myworkdayjobs.com',
+                'applicantpro.com', 'paycom.com', 'adp.com', 'indeed.com',
+                'linkedin.com/company', 'glassdoor.com/Overview', 'monster.com', 'ziprecruiter.com'
+            ]
+        
+            for link in soup.find_all('a'):
+                href = link.get('href')
+                if not href:
+                    continue
+                
+                if any(platform in href.lower() for platform in job_platform_domains):
+                    self.logger.info(f"Found career URL via job platform: {href}")
+                    return href
+        
+            # Method 4: Look for career links in the footer
+            footer = soup.find(['footer', 'div'], class_=lambda c: c and 'footer' in c.lower())
+            if footer:
+                for link in footer.find_all('a'):
+                    href = link.get('href')
+                    text = link.get_text().lower().strip()
+                
+                    if not href:
+                        continue
+                
+                    if any(keyword in text for keyword in career_keywords):
+                        # Make sure the URL is absolute
+                        if not href.startswith(('http://', 'https://')):
+                            href = urljoin(company_url, href)
+                
+                    self.logger.info(f"Found career URL in footer: {href}")
+                    return href
+        
+            # Method 5: Check for "About Us" page which might contain career links
+            about_links = []
+            for link in soup.find_all('a'):
+                href = link.get('href')
+                text = link.get_text().lower().strip()
             
+                if not href:
+                    continue
+            
+                if 'about' in text or 'about us' in text or 'about-us' in href.lower() or 'about' in href.lower():
+                    # Make sure the URL is absolute
+                    if not href.startswith(('http://', 'https://')):
+                        href = urljoin(company_url, href)
+                
+                about_links.append(href)
+        
+            # Check the first few about links for career links
+            for about_link in about_links[:3]:  # Limit to first 3 to avoid too many requests
+                try:
+                    self.rate_limiter.limit()
+                    about_response = safe_request(about_link, timeout=30)
+                
+                    if about_response:
+                        about_soup = BeautifulSoup(about_response.content, 'html.parser')
+                    
+                        for link in about_soup.find_all('a'):
+                            href = link.get('href')
+                            text = link.get_text().lower().strip()
+                        
+                            if not href:
+                                continue
+                            
+                            if any(keyword in text for keyword in career_keywords):
+                                # Make sure the URL is absolute
+                                if not href.startswith(('http://', 'https://')):
+                                    href = urljoin(about_link, href)
+                                
+                                self.logger.info(f"Found career URL in about page: {href}")
+                                return href
+                except:
+                    # Ignore errors when checking about pages
+                    pass
+        
             self.logger.warning(f"No career URL found for {company_name}")
             return None
-        
+    
         except requests.RequestException as e:
             self.error_handler.handle_request_error(e, company_url, "Career URL scraping")
             return None

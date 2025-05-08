@@ -43,7 +43,12 @@ class JobListingsScraper:
         # Common job listing page identifiers
         self.job_page_identifiers = [
             "jobs", "careers", "positions", "vacancies", "opportunities", 
-            "openings", "join", "work with us", "current openings", "apply"
+            "openings", "join", "work with us", "current openings", "apply",
+            "job search", "search jobs", "browse jobs", "view jobs", "find jobs",
+            "job listings", "career opportunities", "open positions", "current vacancies",
+            "job board", "career explorer", "job explorer", "employment opportunities",
+            "job opportunities", "career listings", "job postings", "available positions",
+            "careers search", "job finder", "career finder", "work opportunities"
         ]
         
         # Common job listing element selectors
@@ -216,31 +221,102 @@ class JobListingsScraper:
         try:
             self.logger.info(f"Looking for job listing pages on {career_url}")
             response = safe_request(career_url)
-            
+        
             if not response:
                 self.logger.error(f"Failed to fetch {career_url}")
                 return job_listing_urls
-            
+        
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Look for links to job listing pages
+        
+            # Method 1: Look for links with specific text patterns
             for link in soup.find_all('a'):
                 href = link.get('href')
-                text = link.get_text().lower().strip()
-                
                 if not href:
                     continue
                 
+                link_text = link.get_text().lower().strip()
+            
                 # Check if the link text contains job listing page identifiers
-                if any(identifier in text for identifier in self.job_page_identifiers):
+                if any(identifier in link_text for identifier in self.job_page_identifiers):
                     # Make sure the URL is absolute
                     if not href.startswith(('http://', 'https://')):
                         href = urljoin(career_url, href)
-                    
-                    self.logger.info(f"Found job listing page: {href}")
+                
+                    self.logger.info(f"Found job listing page via text match: '{link_text}' -> {href}")
                     job_listing_urls.append(href)
+        
+            # Method 2: Look for links with specific URL patterns
+            job_url_patterns = [
+                r'/jobs/?', r'/careers/jobs/?', r'/careers/search/?', r'/careers/openings/?',
+                r'/job-search/?', r'/positions/?', r'/vacancies/?', r'/opportunities/?',
+                r'/careers/listings/?', r'/careers/positions/?', r'/careers/opportunities/?',
+                r'/careers/browse/?', r'/careers/find/?', r'/careers/view/?',
+                r'/job-listings/?', r'/job-board/?', r'/career-explorer/?', r'/job-explorer/?'
+            ]
+        
+            for link in soup.find_all('a'):
+                href = link.get('href')
+                if not href:
+                    continue
+                
+                # Check if the URL matches any of the patterns
+                if any(re.search(pattern, href, re.IGNORECASE) for pattern in job_url_patterns):
+                    # Make sure the URL is absolute
+                    if not href.startswith(('http://', 'https://')):
+                        href = urljoin(career_url, href)
+                
+                    self.logger.info(f"Found job listing page via URL pattern: {href}")
+                    if href not in job_listing_urls:
+                        job_listing_urls.append(href)
+        
+            # Method 3: Look for common job board platforms
+            job_platform_patterns = [
+                r'workday\.com', r'lever\.co', r'greenhouse\.io', r'recruitee\.com',
+                r'jobvite\.com', r'smartrecruiters\.com', r'taleo\.net', r'brassring\.com',
+                r'icims\.com', r'successfactors\.com', r'bamboohr\.com', r'paylocity\.com',
+                r'applytojob\.com', r'recruitingbypaycor\.com', r'ultipro\.com', r'myworkdayjobs\.com',
+                r'applicantpro\.com', r'paycom\.com', r'adp\.com', r'indeed\.com',
+                r'linkedin\.com/jobs', r'glassdoor\.com/job', r'monster\.com', r'ziprecruiter\.com',
+                r'careers\..*?\.com', r'jobs\..*?\.com'
+            ]
+        
+            for link in soup.find_all('a'):
+                href = link.get('href')
+                if not href:
+                    continue
+                
+                # Check if the URL matches any of the job platform patterns
+                if any(re.search(pattern, href, re.IGNORECASE) for pattern in job_platform_patterns):
+                    # Make sure the URL is absolute
+                    if not href.startswith(('http://', 'https://')):
+                        href = urljoin(career_url, href)
+                
+                    self.logger.info(f"Found job listing page via job platform: {href}")
+                    if href not in job_listing_urls:
+                        job_listing_urls.append(href)
+        
+            # Method 4: Look for buttons that might lead to job listings
+            button_texts = [
+                "view jobs", "search jobs", "browse jobs", "find jobs", "see jobs",
+                "explore jobs", "job search", "current openings", "open positions",
+                "view opportunities", "see opportunities", "explore opportunities"
+            ]
+        
+            for button in soup.find_all(['button', 'a'], class_=lambda c: c and any(cls in c.lower() for cls in ['btn', 'button'])):
+                button_text = button.get_text().lower().strip()
             
-            # If no job listing pages found, try to find iframes that might contain job listings
+                if any(text in button_text for text in button_texts):
+                    href = button.get('href')
+                    if href:
+                        # Make sure the URL is absolute
+                        if not href.startswith(('http://', 'https://')):
+                            href = urljoin(career_url, href)
+                    
+                        self.logger.info(f"Found job listing page via button: '{button_text}' -> {href}")
+                        if href not in job_listing_urls:
+                            job_listing_urls.append(href)
+        
+            # Method 5: If no job listing pages found, try to find iframes that might contain job listings
             if not job_listing_urls:
                 for iframe in soup.find_all('iframe'):
                     src = iframe.get('src')
@@ -248,14 +324,23 @@ class JobListingsScraper:
                         # Make sure the URL is absolute
                         if not src.startswith(('http://', 'https://')):
                             src = urljoin(career_url, src)
-                        
-                        # Check if the iframe src contains job listing page identifiers
-                        if any(identifier in src.lower() for identifier in self.job_page_identifiers):
-                            self.logger.info(f"Found job listing iframe: {src}")
-                            job_listing_urls.append(src)
-            
+                    
+                    # Check if the iframe src contains job listing page identifiers or platform patterns
+                    if (any(identifier in src.lower() for identifier in self.job_page_identifiers) or
+                        any(re.search(pattern, src, re.IGNORECASE) for pattern in job_platform_patterns)):
+                        self.logger.info(f"Found job listing iframe: {src}")
+                        job_listing_urls.append(src)
+        
+            # Method 6: If still no job listing pages found, check if the career URL itself is a job listing page
+            if not job_listing_urls:
+                # Check if the URL contains job listing indicators
+                if (any(identifier in career_url.lower() for identifier in self.job_page_identifiers) or
+                    any(re.search(pattern, career_url, re.IGNORECASE) for pattern in job_platform_patterns)):
+                    self.logger.info(f"Career URL itself appears to be a job listing page: {career_url}")
+                    job_listing_urls.append(career_url)
+        
             return job_listing_urls
-            
+        
         except Exception as e:
             self.error_handler.handle_error(e, f"Error finding job listing pages for {career_url}")
             return job_listing_urls
