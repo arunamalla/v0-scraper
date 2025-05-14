@@ -1,366 +1,269 @@
+import csv
+import json
+import logging
+import re
+import time
+from typing import Dict, List, Optional
+from urllib.parse import urlparse
+
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-import re
-import concurrent.futures
-import threading
-from typing import List, Dict, Any, Set
+from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
-from logger import Logger
-from error_handler import ErrorHandler
-from data_manager import DataManager
-from rate_limiter import RateLimiter
-from robots_parser import RobotsParser
-from url_tracker import URLTracker
-from utils import safe_request
+logger = logging.getLogger(__name__)
 
 class JobScraper:
-    """Scrape career URLs from customer websites."""
+    """Scraper to extract company information and career URLs."""
     
-    def __init__(self, rate_limit_seconds=3, logger=None, error_handler=None, data_manager=None, url_tracker=None):
+    def __init__(self, headless: bool = True, timeout: int = 30):
         """Initialize the job scraper.
         
         Args:
-            rate_limit_seconds: Time to wait between requests
-            logger: Logger instance
-            error_handler: ErrorHandler instance
-            data_manager: DataManager instance
-            url_tracker: URLTracker instance
+            headless: Whether to run the browser in headless mode.
+            timeout: Default timeout for waiting for elements.
         """
-        self.logger = logger or Logger()
-        self.error_handler = error_handler or ErrorHandler(self.logger)
-        self.data_manager = data_manager or DataManager(logger=self.logger, error_handler=self.error_handler)
-        self.rate_limiter = RateLimiter(rate_limit_seconds, self.logger)
-        self.robots_parser = RobotsParser(self.logger, self.error_handler)
-        self.url_tracker = url_tracker or URLTracker(logger=self.logger, error_handler=self.error_handler)
+        self.timeout = timeout
+        self.headless = headless
         
-        self.career_data = []
-        self.lock = threading.Lock()  # Lock for thread safety
+    def _create_driver(self) -> webdriver.Chrome:
+        """Create and configure a Chrome webdriver."""
+        chrome_options = Options()
+        if self.headless:
+            chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--window-size=1920,1080")
         
-        # Common career page patterns
-        self.career_patterns = [
-            r'/careers?/?$',
-            r'/jobs/?$',
-            r'/join-us/?$',
-            r'/work-with-us/?$',
-            r'/employment/?$',
-            r'/opportunities/?$',
-            r'/join-our-team/?$',
-            r'/work-for-us/?$'
-        ]
+        return webdriver.Chrome(options=chrome_options)
     
-    def scrape_career_urls(self, customer_details, output_file="career_urls.json", limit=None, max_workers=5, resume=True):
-        """Scrape career URLs from customer websites.
+    def _find_career_url(self, driver: webdriver.Chrome, company_url: str) -> Optional[str]:
+        """Find the careers page URL from a company website.
         
         Args:
-            customer_details: List of customer details from CustomerDetailScraper
-            output_file: File to save the career URLs to
-            limit: Maximum number of customers to process
-            max_workers: Maximum number of worker threads
-            resume: Whether to resume from a checkpoint
+            driver: Selenium webdriver instance.
+            company_url: URL of the company website.
             
         Returns:
-            List of career data
+            URL of the careers page, or None if not found.
         """
-        if not customer_details:
-            self.logger.error("No customer details provided")
-            return []
-        
-        # Load existing data if resuming
-        if resume:
-            checkpoint = self.url_tracker.load_checkpoint()
-            if checkpoint and checkpoint.get('stage') == 'career_urls':
-                self.logger.info("Resuming career URL scraping from checkpoint")
-                self.career_data = self.data_manager.load_data(output_file) or []
-                
-                # Get the last processed index
-                last_index = checkpoint.get('last_index', 0)
-                
-                # If we have data and haven't finished, we can skip some customers
-                if self.career_data and last_index < len(customer_details):
-                    self.logger.info(f"Loaded {len(self.career_data)} career URLs from previous session")
-                    self.logger.info(f"Resuming from index {last_index}")
-                    
-                    # Adjust customer_details to start from where we left off
-                    customer_details = customer_details[last_index:]
-        
-        # Process only a subset if limit is specified
-        customers_to_process = customer_details[:limit] if limit is not None else customer_details
-        
-        # Filter out customers without company URLs
-        customers_with_urls = []
-        for customer in customers_to_process:
-            company_url = customer.get("company_url")
-            if company_url:
-                # Check if we've already found a career URL for this company
-                if not any(career.get("company_url") == company_url for career in self.career_data):
-                    customers_with_urls.append(customer)
-        
-        self.logger.info(f"Scraping career URLs for {len(customers_with_urls)} companies out of {len(customers_to_process)} total")
-        
-        # Use ThreadPoolExecutor for parallel processing
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit tasks
-            future_to_customer = {
-                executor.submit(self._process_company, i, customer, len(customers_with_urls), output_file): customer
-                for i, customer in enumerate(customers_with_urls)
-            }
+        try:
+            # Common link text patterns that lead to career pages
+            career_link_patterns = [
+                r'career',
+                r'job',
+                r'work.*us',
+                r'join.*us',
+                r'position',
+                r'opening',
+                r'opportunit',
+                r'employ',
+                r'recruitment',
+                r'talent',
+                r'vacanc'
+            ]
             
-            # Process results as they complete
-            for future in concurrent.futures.as_completed(future_to_customer):
-                customer = future_to_customer[future]
+            # Compiled regular expressions for faster matching
+            career_link_regexes = [re.compile(pattern, re.IGNORECASE) for pattern in career_link_patterns]
+            
+            # Extract all links from the page
+            elements = driver.find_elements(By.TAG_NAME, "a")
+            
+            for element in elements:
                 try:
-                    future.result()  # This will re-raise any exceptions from the thread
+                    href = element.get_attribute("href")
+                    text = element.text.strip()
+                    
+                    if not href or not text:
+                        continue
+                        
+                    # Check if link text matches any of our patterns
+                    for regex in career_link_regexes:
+                        if regex.search(text):
+                            logger.debug(f"Found career link: {href} with text: {text}")
+                            return href
                 except Exception as e:
-                    self.error_handler.handle_error(e, f"Error processing company {customer.get('company_name')}")
-        
-        # Final save
-        self.data_manager.save_data(self.career_data, output_file)
-        
-        # Clear checkpoint since we're done with this stage
-        self.url_tracker.clear_checkpoint()
-        
-        return self.career_data
-    
-    def _process_company(self, index, customer, total, output_file):
-        """Process a single company.
-        
-        Args:
-            index: Index of the company in the list
-            customer: Customer data
-            total: Total number of companies
-            output_file: File to save the career URLs to
-        """
-        company_url = customer.get("company_url")
-        company_name = customer.get("company_name") or customer.get("title")
-        
-        if not company_url:
-            self.logger.warning(f"No company URL found for {company_name}")
-            return
-        
-        # Check if we've already visited this URL
-        if self.url_tracker.is_job_url_visited(company_url):
-            self.logger.info(f"Already visited {company_url}, skipping")
-            return
-            
-        self.logger.info(f"Processing company {index+1}/{total}: {company_name}")
-        
-        # Check if crawling is allowed
-        if not self.robots_parser.is_allowed('*', company_url):
-            self.logger.warning(f"Crawling not allowed for {company_url}")
-            return
-        
-        try:
-            # Apply rate limiting
-            self.rate_limiter.limit()
-            
-            # Find career URL
-            career_url = self._find_career_url(company_url, company_name)
-            
-            if career_url:
-                career_data = {
-                    "company_name": company_name,
-                    "company_url": company_url,
-                    "career_url": career_url
-                }
-                
-                # Thread-safe update of career_data list
-                with self.lock:
-                    self.career_data.append(career_data)
-                    
-                    # Save checkpoint
-                    self.url_tracker.save_checkpoint({
-                        'stage': 'career_urls',
-                        'last_index': index,
-                        'careers_count': len(self.career_data)
-                    })
-                    
-                    # Save after each successful scrape to avoid losing data
-                    self.data_manager.save_data(self.career_data, output_file)
-                
-                # Mark this URL as visited
-                self.url_tracker.add_job_url(company_url)
-                
-        except Exception as e:
-            self.error_handler.handle_error(e, f"Error processing company {company_name}")
-    
-    def _find_career_url(self, company_url, company_name):
-        """Find the career URL for a company.
-        
-        Args:
-            company_url: URL of the company website
-            company_name: Name of the company
-            
-        Returns:
-            Career URL if found, None otherwise
-        """
-        try:
-            self.logger.info(f"Fetching {company_url}")
-            response = safe_request(company_url, timeout=30)
-        
-            if not response:
-                self.logger.error(f"Failed to fetch {company_url}")
-                return None
-        
-            soup = BeautifulSoup(response.content, 'html.parser')
-        
-            # Method 1: Look for common career page links with expanded keywords
-            career_keywords = [
-                'career', 'careers', 'jobs', 'job', 'join', 'work with us', 'employment', 
-                'opportunities', 'join our team', 'work for us', 'join the team', 
-                'current openings', 'open positions', 'job opportunities', 'career opportunities',
-                'we\'re hiring', 'job openings', 'vacancies', 'positions', 'recruitment',
-                'join us', 'apply now', 'apply today', 'job search', 'career search'
-            ]
-        
-            for link in soup.find_all('a'):
-                href = link.get('href')
-                text = link.get_text().lower().strip()
-            
-                if not href:
+                    logger.debug(f"Error extracting link: {str(e)}")
                     continue
             
-                # Check if the link text contains career keywords
-                if any(keyword in text for keyword in career_keywords):
-                    # Make sure the URL is absolute
-                    if not href.startswith(('http://', 'https://')):
-                        href = urljoin(company_url, href)
-            
-                    self.logger.info(f"Found career URL via keywords: {href}")
-                    return href
-        
-            # Method 2: Check common career URL patterns with expanded patterns
-            parsed_url = urlparse(company_url)
-            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        
-            career_patterns = [
-                r'/careers/?$',
-                r'/jobs/?$',
-                r'/join-us/?$',
-                r'/work-with-us/?$',
-                r'/employment/?$',
-                r'/opportunities/?$',
-                r'/join-our-team/?$',
-                r'/work-for-us/?$',
-                r'/join-the-team/?$',
-                r'/current-openings/?$',
-                r'/open-positions/?$',
-                r'/job-opportunities/?$',
-                r'/career-opportunities/?$',
-                r'/were-hiring/?$',
-                r'/job-openings/?$',
-                r'/vacancies/?$',
-                r'/positions/?$',
-                r'/recruitment/?$',
-                r'/apply-now/?$',
-                r'/apply-today/?$',
-                r'/job-search/?$',
-                r'/career-search/?$',
-                r'/about-us/careers/?$',
-                r'/about/careers/?$',
-                r'/company/careers/?$',
-                r'/en/careers/?$',
-                r'/us/careers/?$'
-            ]
-        
-            for pattern in career_patterns:
-                career_url = urljoin(base_url, re.sub(r'^/', '', pattern))
-            
+            # Method 2: Look for links with career URLs
+            for element in elements:
                 try:
-                    # Check if the URL exists
-                    self.rate_limiter.limit()
-                    head_response = safe_request(career_url, method='head', timeout=10)
-                
-                    if head_response and head_response.status_code < 400:
-                        self.logger.info(f"Found career URL via pattern: {career_url}")
-                        return career_url
-                except:
-                    # Ignore errors when checking pattern URLs
-                    pass
-        
-            # Method 3: Check for links to common job platforms
-            job_platform_domains = [
-                'workday.com', 'lever.co', 'greenhouse.io', 'recruitee.com',
-                'jobvite.com', 'smartrecruiters.com', 'taleo.net', 'brassring.com',
-                'icims.com', 'successfactors.com', 'bamboohr.com', 'paylocity.com',
-                'applytojob.com', 'recruitingbypaycor.com', 'ultipro.com', 'myworkdayjobs.com',
-                'applicantpro.com', 'paycom.com', 'adp.com', 'indeed.com',
-                'linkedin.com/company', 'glassdoor.com/Overview', 'monster.com', 'ziprecruiter.com'
-            ]
-        
-            for link in soup.find_all('a'):
-                href = link.get('href')
-                if not href:
-                    continue
-                
-                if any(platform in href.lower() for platform in job_platform_domains):
-                    self.logger.info(f"Found career URL via job platform: {href}")
-                    return href
-        
-            # Method 4: Look for career links in the footer
-            footer = soup.find(['footer', 'div'], class_=lambda c: c and 'footer' in c.lower())
-            if footer:
-                for link in footer.find_all('a'):
-                    href = link.get('href')
-                    text = link.get_text().lower().strip()
-                
+                    href = element.get_attribute("href")
                     if not href:
                         continue
-                
-                    if any(keyword in text for keyword in career_keywords):
-                        # Make sure the URL is absolute
-                        if not href.startswith(('http://', 'https://')):
-                            href = urljoin(company_url, href)
-                
-                    self.logger.info(f"Found career URL in footer: {href}")
-                    return href
-        
-            # Method 5: Check for "About Us" page which might contain career links
-            about_links = []
-            for link in soup.find_all('a'):
-                href = link.get('href')
-                text = link.get_text().lower().strip()
-            
-                if not href:
+                        
+                    # Parse the URL
+                    parsed_url = urlparse(href)
+                    
+                    # Check if the URL contains career-related keywords
+                    for pattern in career_link_patterns:
+                        if re.search(pattern, parsed_url.path, re.IGNORECASE):
+                            logger.debug(f"Found career link by URL path: {href}")
+                            return href
+                except Exception as e:
+                    logger.debug(f"Error checking URL pattern: {str(e)}")
                     continue
             
-                if 'about' in text or 'about us' in text or 'about-us' in href.lower() or 'about' in href.lower():
-                    # Make sure the URL is absolute
-                    if not href.startswith(('http://', 'https://')):
-                        href = urljoin(company_url, href)
-                
-                about_links.append(href)
-        
-            # Check the first few about links for career links
-            for about_link in about_links[:3]:  # Limit to first 3 to avoid too many requests
+            # Method 3: Check common career URL patterns based on company domain
+            parsed_company_url = urlparse(company_url)
+            base_domain = parsed_company_url.netloc
+            
+            common_career_paths = [
+                f"https://{base_domain}/careers",
+                f"https://{base_domain}/jobs",
+                f"https://{base_domain}/work-with-us",
+                f"https://{base_domain}/join-us",
+                f"https://{base_domain}/company/careers",
+                f"https://{base_domain}/en/careers",
+                f"https://{base_domain}/about/careers",
+                f"https://careers.{base_domain}"
+            ]
+            
+            for career_path in common_career_paths:
                 try:
-                    self.rate_limiter.limit()
-                    about_response = safe_request(about_link, timeout=30)
-                
-                    if about_response:
-                        about_soup = BeautifulSoup(about_response.content, 'html.parser')
-                    
-                        for link in about_soup.find_all('a'):
-                            href = link.get('href')
-                            text = link.get_text().lower().strip()
-                        
-                            if not href:
-                                continue
-                            
-                            if any(keyword in text for keyword in career_keywords):
-                                # Make sure the URL is absolute
-                                if not href.startswith(('http://', 'https://')):
-                                    href = urljoin(about_link, href)
-                                
-                                self.logger.info(f"Found career URL in about page: {href}")
-                                return href
-                except:
-                    # Ignore errors when checking about pages
-                    pass
-        
-            self.logger.warning(f"No career URL found for {company_name}")
+                    response = requests.head(career_path, timeout=5)
+                    if response.status_code < 400:  # Successful response
+                        logger.debug(f"Found career link by common pattern: {career_path}")
+                        return career_path
+                except Exception:
+                    continue
+            
+            logger.info(f"No career URL found for {company_url}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding career URL for {company_url}: {str(e)}")
             return None
     
-        except requests.RequestException as e:
-            self.error_handler.handle_request_error(e, company_url, "Career URL scraping")
-            return None
+    def _extract_company_info(self, driver: webdriver.Chrome, url: str) -> Dict[str, str]:
+        """Extract company information from its website.
+        
+        Args:
+            driver: Selenium webdriver instance.
+            url: URL of the company website.
+            
+        Returns:
+            Dictionary containing company information.
+        """
+        company_info = {'url': url}
+        
+        try:
+            # Find company name
+            title = driver.title
+            if title:
+                # Strip common suffixes like "| Home", "- Official Website", etc.
+                title = re.sub(r'\s*[\|\-–]\s*.*$', '', title).strip()
+                company_info['name'] = title
+            
+            # Get meta description
+            meta_desc = driver.find_element(By.CSS_SELECTOR, "meta[name='description']").get_attribute("content")
+            if meta_desc:
+                company_info['description'] = meta_desc
+            
+            # Try to find company logo
+            logo_selectors = [
+                "img[id*='logo']",
+                "img[class*='logo']",
+                "img[alt*='logo']",
+                "img[src*='logo']",
+                "img[class*='brand']",
+                "img.logo",
+                "a.navbar-brand img",
+                "header img",
+                ".header img",
+                ".navbar img"
+            ]
+            
+            for selector in logo_selectors:
+                try:
+                    logo = driver.find_element(By.CSS_SELECTOR, selector)
+                    logo_url = logo.get_attribute("src")
+                    if logo_url:
+                        company_info['logo_url'] = logo_url
+                        break
+                except Exception:
+                    continue
+            
+            # Find careers URL
+            career_url = self._find_career_url(driver, url)
+            if career_url:
+                company_info['career_url'] = career_url
+            
+            logger.info(f"Extracted company info for {url}: {company_info.get('name', 'Unknown')}")
+            return company_info
+            
+        except Exception as e:
+            logger.error(f"Error extracting company info for {url}: {str(e)}")
+            return company_info
+    
+    def scrape(self, input_file: str) -> List[Dict[str, str]]:
+        """Scrape company information and career URLs from a list of URLs.
+        
+        Args:
+            input_file: Path to a CSV file containing company URLs.
+            
+        Returns:
+            List of dictionaries containing company information.
+        """
+        companies = []
+        
+        # Read URLs from the input file
+        with open(input_file, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            urls = [row[0] for row in reader if row]
+        
+        logger.info(f"Loaded {len(urls)} URLs from {input_file}")
+        
+        # Use a single webdriver for all URLs
+        driver = self._create_driver()
+        
+        try:
+            for url in urls:
+                logger.info(f"Processing URL: {url}")
+                
+                try:
+                    # Navigate to the URL
+                    driver.get(url)
+                    WebDriverWait(driver, self.timeout).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
+                    
+                    # Extract company information
+                    company_info = self._extract_company_info(driver, url)
+                    
+                    companies.append(company_info)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing URL {url}: {str(e)}")
+                    # Still add the URL to the results, even if we couldn't extract info
+                    companies.append({'url': url, 'error': str(e)})
+                
+                # Sleep to avoid overloading the server
+                time.sleep(1)
+                
+        except Exception as e:
+            logger.error(f"Unexpected error during scraping: {str(e)}")
+        finally:
+            driver.quit()
+            
+        logger.info(f"Scraped information for {len(companies)} companies")
+        return companies
+    
+    def save_to_file(self, companies: List[Dict[str, str]], filename: str) -> None:
+        """Save company information to a JSON file.
+        
+        Args:
+            companies: List of dictionaries containing company information.
+            filename: Path to the output file.
+        """
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(companies, f, indent=2, ensure_ascii=False)
+            
+        logger.info(f"Saved {len(companies)} companies to {filename}")

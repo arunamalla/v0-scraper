@@ -1,197 +1,92 @@
-import os
 import argparse
-import time
-from logger import Logger
-from error_handler import ErrorHandler
-from data_manager import DataManager
-from oracle_customer_scraper import OracleCustomerScraper
-from customer_detail_scraper import CustomerDetailScraper
-from job_scraper import JobScraper
-from job_listings_scraper import JobListingsScraper
-from job_detail_scraper import JobDetailScraper
-from url_tracker import URLTracker
+import csv
+import json
+import logging
+import os
+import sys
+from typing import Dict, List
 
-def parse_arguments():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Oracle Customer Success Scraper')
-    
-    parser.add_argument('--rate-limit', type=int, default=3,
-                        help='Rate limit in seconds between requests (default: 3)')
-    parser.add_argument('--limit', type=int, default=None,
-                        help='Limit the number of customers to process (default: all)')
-    parser.add_argument('--data-dir', type=str, default='data',
-                        help='Directory to store data files (default: data)')
-    parser.add_argument('--log-dir', type=str, default='logs',
-                        help='Directory to store log files (default: logs)')
-    parser.add_argument('--skip-customers', action='store_true',
-                        help='Skip scraping the customers list')
-    parser.add_argument('--skip-details', action='store_true',
-                        help='Skip scraping customer details')
-    parser.add_argument('--skip-careers', action='store_true',
-                        help='Skip scraping career URLs')
-    parser.add_argument('--skip-job-listings', action='store_true',
-                        help='Skip scraping job listings')
-    parser.add_argument('--skip-job-details', action='store_true',
-                        help='Skip scraping job details')
-    parser.add_argument('--threads', type=int, default=5,
-                        help='Number of threads to use for parallel scraping (default: 5)')
-    parser.add_argument('--no-resume', action='store_true',
-                        help='Do not resume from previous checkpoint')
-    parser.add_argument('--min-customers', type=int, default=100,
-                        help='Minimum number of customers expected (default: 100)')
-    
-    return parser.parse_args()
+from job_detail_scraper import JobDetailScraper
+from job_listings_scraper import JobListingsScraper
+from job_scraper import JobScraper
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('scraper.log')
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 def main():
-    """Main function to run the scraper."""
-    # Parse command line arguments
-    args = parse_arguments()
+    parser = argparse.ArgumentParser(description='Oracle Customer Success Scraper')
+    parser.add_argument('--input', '-i', type=str, help='Input CSV file with URLs', default='urls.csv')
+    parser.add_argument('--seed', '-s', type=str, help='Seed JSON file with Oracle customers')
+    parser.add_argument('--output-dir', '-o', type=str, help='Output directory for scraped data', default='output')
+    parser.add_argument('--headless', action='store_true', help='Run in headless mode', default=True)
+    parser.add_argument('--timeout', type=int, help='Timeout in seconds', default=30)
+    parser.add_argument('--workers', type=int, help='Number of parallel workers', default=5)
     
-    # Create directories
-    os.makedirs(args.data_dir, exist_ok=True)
-    os.makedirs(args.log_dir, exist_ok=True)
+    args = parser.parse_args()
     
-    # Initialize shared components
-    logger = Logger(args.log_dir)
-    error_handler = ErrorHandler(logger)
-    data_manager = DataManager(args.data_dir, logger, error_handler)
-    url_tracker = URLTracker(args.data_dir, logger, error_handler)
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output_dir, exist_ok=True)
     
-    # Display warning about SSL verification
-    logger.warning("SSL certificate verification will be disabled for sites with certificate issues. This is less secure but necessary for scraping some sites.")
-    
-    # File paths
-    customers_file = os.path.join(args.data_dir, "customers_list.json")
-    details_file = os.path.join(args.data_dir, "customer_details.json")
-    careers_file = os.path.join(args.data_dir, "career_urls.json")
-    job_listings_file = os.path.join(args.data_dir, "job_listings.json")
-    job_details_file = os.path.join(args.data_dir, "job_details.json")
-    
-    # Check if we should resume
-    resume = not args.no_resume
-    
-    # Step 1: Scrape the list of customers
-    customers_data = []
-    if not args.skip_customers:
-        logger.info("Starting to scrape customers list")
+    # Load URLs from either seed JSON or CSV file
+    urls = []
+    if args.seed and args.seed.endswith('.json'):
+        # Load the seed URLs
+        with open(args.seed, 'r', encoding='utf-8') as f:
+            data = json.load(f)
         
-        # Add retry mechanism
-        max_retries = 3
-        retry_count = 0
-        min_expected_customers = args.min_customers
-        
-        while retry_count < max_retries:
-            oracle_scraper = OracleCustomerScraper(
-                rate_limit_seconds=args.rate_limit,
-                logger=logger,
-                error_handler=error_handler,
-                data_manager=data_manager,
-                url_tracker=url_tracker
-            )
-            customers_data = oracle_scraper.scrape_customers_list(output_file="customers_list.json", resume=resume)
-            
-            if len(customers_data) >= min_expected_customers:
-                logger.info(f"Successfully scraped {len(customers_data)} customers")
-                break
-            
-            retry_count += 1
-            if retry_count < max_retries:
-                logger.warning(f"Only found {len(customers_data)} customers. Retrying ({retry_count}/{max_retries})...")
-                time.sleep(60)  # Wait a minute before retrying
-        
-        if len(customers_data) < min_expected_customers:
-            logger.warning(f"Could only find {len(customers_data)} customers after {max_retries} attempts. Continuing with what we have.")
+        # Extract URLs from the seed file
+        if 'oracle_customers' in data:
+            urls = [customer['url'] for customer in data['oracle_customers']]
+            logger.info(f"Loaded {len(urls)} URLs from seed file {args.seed}")
+        else:
+            # Assume it's a simple list of URLs
+            urls = data
+            logger.info(f"Loaded {len(urls)} URLs from JSON file {args.seed}")
     else:
-        logger.info("Skipping customers list scraping, loading from file")
-        customers_data = data_manager.load_data("customers_list.json") or []
+        # Original CSV loading code
+        with open(args.input, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            urls = [row[0] for row in reader if row]
+        logger.info(f"Loaded {len(urls)} URLs from CSV file {args.input}")
     
-    # Step 2: Scrape detailed information for each customer
-    customer_details = []
-    if not args.skip_details and customers_data:
-        logger.info("Starting to scrape customer details")
-        detail_scraper = CustomerDetailScraper(
-            rate_limit_seconds=args.rate_limit,
-            logger=logger,
-            error_handler=error_handler,
-            data_manager=data_manager,
-            url_tracker=url_tracker
-        )
-        customer_details = detail_scraper.scrape_customer_details(
-            customers_data,
-            output_file="customer_details.json",
-            limit=args.limit,
-            max_workers=args.threads,
-            resume=resume
-        )
-    else:
-        logger.info("Skipping customer details scraping, loading from file")
-        customer_details = data_manager.load_data("customer_details.json") or []
+    # Step 1: Scrape customer companies and their career URLs
+    logger.info("Step 1: Scraping customer companies and career URLs")
+    job_scraper = JobScraper(headless=args.headless, timeout=args.timeout)
     
-    # Step 3: Scrape career URLs
-    career_urls = []
-    if not args.skip_careers and customer_details:
-        logger.info("Starting to scrape career URLs")
-        job_scraper = JobScraper(
-            rate_limit_seconds=args.rate_limit,
-            logger=logger,
-            error_handler=error_handler,
-            data_manager=data_manager,
-            url_tracker=url_tracker
-        )
-        career_urls = job_scraper.scrape_career_urls(
-            customer_details,
-            output_file="career_urls.json",
-            limit=args.limit,
-            max_workers=args.threads,
-            resume=resume
-        )
-    else:
-        logger.info("Skipping career URLs scraping, loading from file")
-        career_urls = data_manager.load_data("career_urls.json") or []
+    companies = job_scraper.scrape(urls)
+    job_scraper.save_to_file(companies, os.path.join(args.output_dir, 'companies.json'))
     
-    # Step 4: Scrape job listings
-    job_listings = []
-    if not args.skip_job_listings and career_urls:
-        logger.info("Starting to scrape job listings")
-        job_listings_scraper = JobListingsScraper(
-            rate_limit_seconds=args.rate_limit,
-            logger=logger,
-            error_handler=error_handler,
-            data_manager=data_manager,
-            url_tracker=url_tracker
-        )
-        job_listings = job_listings_scraper.scrape_job_listings(
-            career_urls_file="career_urls.json",
-            output_file="job_listings.json",
-            limit=args.limit,
-            max_workers=args.threads,
-            resume=resume
-        )
-    else:
-        logger.info("Skipping job listings scraping, loading from file")
-        job_listings = data_manager.load_data("job_listings.json") or []
+    # Extract career URLs from companies
+    career_urls = [company.get('career_url') for company in companies if company.get('career_url')]
     
-    # Step 5: Scrape job details
-    if not args.skip_job_details and job_listings:
-        logger.info("Starting to scrape job details")
-        job_detail_scraper = JobDetailScraper(
-            rate_limit_seconds=args.rate_limit,
-            logger=logger,
-            error_handler=error_handler,
-            data_manager=data_manager,
-            url_tracker=url_tracker
-        )
-        job_detail_scraper.scrape_job_details(
-            job_listings_file="job_listings.json",
-            output_file="job_details.json",
-            limit=args.limit,
-            max_workers=args.threads,
-            resume=resume
-        )
-    else:
-        logger.info("Skipping job details scraping")
+    # Step 2: Scrape job listings from career URLs
+    logger.info("Step 2: Scraping job listings from career URLs")
+    job_listings_scraper = JobListingsScraper(headless=args.headless, timeout=args.timeout)
     
-    logger.info("Scraping completed")
+    job_listings = job_listings_scraper.scrape(career_urls)
+    job_listings_scraper.save_to_file(job_listings, os.path.join(args.output_dir, 'job_listings.json'))
+    
+    # Step 3: Scrape detailed job information from job listings
+    logger.info("Step 3: Scraping detailed job information")
+    job_detail_scraper = JobDetailScraper(
+        headless=args.headless, 
+        timeout=args.timeout, 
+        max_workers=args.workers
+    )
+    
+    job_details = job_detail_scraper.scrape(job_listings)
+    job_detail_scraper.save_to_file(job_details, os.path.join(args.output_dir, 'job_details.json'))
+    
+    logger.info("Scraping completed successfully")
 
 if __name__ == "__main__":
     main()
