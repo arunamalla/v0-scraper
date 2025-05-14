@@ -1,15 +1,6 @@
 import json
 import csv
 import os
-import logging
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-logger = logging.getLogger(__name__)
 
 def extract_urls_from_seed(seed_file, output_file):
     """
@@ -33,7 +24,7 @@ def extract_urls_from_seed(seed_file, output_file):
         for url in urls:
             writer.writerow([url])
     
-    logger.info(f"Extracted {len(urls)} URLs to {output_file}")
+    print(f"Extracted {len(urls)} URLs to {output_file}")
 
 if __name__ == "__main__":
     extract_urls_from_seed("seed_urls.json", "urls.csv")

@@ -2,7 +2,6 @@ import os
 import argparse
 import logging
 import sys
-import json
 from job_listings_scraper import JobListingsScraper
 from job_detail_scraper import JobDetailScraper
 
@@ -35,6 +34,7 @@ def main():
     
     # Load the seed URLs
     with open(args.seed, 'r', encoding='utf-8') as f:
+        import json
         data = json.load(f)
     
     # Extract career URLs directly from the seed file

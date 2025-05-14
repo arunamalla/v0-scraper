@@ -75,10 +75,488 @@
     {
       "name": "KPMG",
       "url": "https://www.kpmg.com",
-      "industry": "
-
-```python file="requirements.txt"
-selenium>=4.0.0
-beautifulsoup4>=4.9.0
-requests>=2.25.0
-webdriver-manager>=3.5.0
+      "industry": "Consulting",
+      "region": "Global"
+    },
+    {
+      "name": "Lockheed Martin",
+      "url": "https://www.lockheedmartin.com",
+      "industry": "Aerospace & Defense",
+      "region": "United States"
+    },
+    {
+      "name": "Microsoft",
+      "url": "https://www.microsoft.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Novartis",
+      "url": "https://www.novartis.com",
+      "industry": "Pharmaceuticals",
+      "region": "Global"
+    },
+    {
+      "name": "PepsiCo",
+      "url": "https://www.pepsico.com",
+      "industry": "Food & Beverage",
+      "region": "Global"
+    },
+    {
+      "name": "Pfizer",
+      "url": "https://www.pfizer.com",
+      "industry": "Pharmaceuticals",
+      "region": "Global"
+    },
+    {
+      "name": "Procter & Gamble",
+      "url": "https://www.pg.com",
+      "industry": "Consumer Goods",
+      "region": "Global"
+    },
+    {
+      "name": "Salesforce",
+      "url": "https://www.salesforce.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Samsung",
+      "url": "https://www.samsung.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "SAP",
+      "url": "https://www.sap.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Siemens",
+      "url": "https://www.siemens.com",
+      "industry": "Conglomerate",
+      "region": "Global"
+    },
+    {
+      "name": "Toyota",
+      "url": "https://www.toyota.com",
+      "industry": "Automotive",
+      "region": "Global"
+    },
+    {
+      "name": "Unilever",
+      "url": "https://www.unilever.com",
+      "industry": "Consumer Goods",
+      "region": "Global"
+    },
+    {
+      "name": "Verizon",
+      "url": "https://www.verizon.com",
+      "industry": "Telecommunications",
+      "region": "United States"
+    },
+    {
+      "name": "Walmart",
+      "url": "https://www.walmart.com",
+      "industry": "Retail",
+      "region": "Global"
+    },
+    {
+      "name": "Wells Fargo",
+      "url": "https://www.wellsfargo.com",
+      "industry": "Banking",
+      "region": "United States"
+    },
+    {
+      "name": "Airbus",
+      "url": "https://www.airbus.com",
+      "industry": "Aerospace",
+      "region": "Europe"
+    },
+    {
+      "name": "AstraZeneca",
+      "url": "https://www.astrazeneca.com",
+      "industry": "Pharmaceuticals",
+      "region": "Global"
+    },
+    {
+      "name": "BMW",
+      "url": "https://www.bmw.com",
+      "industry": "Automotive",
+      "region": "Global"
+    },
+    {
+      "name": "BP",
+      "url": "https://www.bp.com",
+      "industry": "Energy",
+      "region": "Global"
+    },
+    {
+      "name": "Canon",
+      "url": "https://global.canon",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Coca-Cola",
+      "url": "https://www.coca-colacompany.com",
+      "industry": "Food & Beverage",
+      "region": "Global"
+    },
+    {
+      "name": "Deutsche Bank",
+      "url": "https://www.db.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "ExxonMobil",
+      "url": "https://corporate.exxonmobil.com",
+      "industry": "Energy",
+      "region": "Global"
+    },
+    {
+      "name": "Ford Motor Company",
+      "url": "https://www.ford.com",
+      "industry": "Automotive",
+      "region": "Global"
+    },
+    {
+      "name": "Goldman Sachs",
+      "url": "https://www.goldmansachs.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "Honda",
+      "url": "https://global.honda",
+      "industry": "Automotive",
+      "region": "Global"
+    },
+    {
+      "name": "HSBC",
+      "url": "https://www.hsbc.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "Johnson & Johnson",
+      "url": "https://www.jnj.com",
+      "industry": "Healthcare",
+      "region": "Global"
+    },
+    {
+      "name": "LG Electronics",
+      "url": "https://www.lg.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Mastercard",
+      "url": "https://www.mastercard.com",
+      "industry": "Financial Services",
+      "region": "Global"
+    },
+    {
+      "name": "McDonald's",
+      "url": "https://corporate.mcdonalds.com",
+      "industry": "Food & Beverage",
+      "region": "Global"
+    },
+    {
+      "name": "Merck",
+      "url": "https://www.merck.com",
+      "industry": "Pharmaceuticals",
+      "region": "Global"
+    },
+    {
+      "name": "Nestlé",
+      "url": "https://www.nestle.com",
+      "industry": "Food & Beverage",
+      "region": "Global"
+    },
+    {
+      "name": "Nike",
+      "url": "https://www.nike.com",
+      "industry": "Apparel",
+      "region": "Global"
+    },
+    {
+      "name": "Nissan",
+      "url": "https://www.nissan-global.com",
+      "industry": "Automotive",
+      "region": "Global"
+    },
+    {
+      "name": "Philips",
+      "url": "https://www.philips.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Shell",
+      "url": "https://www.shell.com",
+      "industry": "Energy",
+      "region": "Global"
+    },
+    {
+      "name": "Sony",
+      "url": "https://www.sony.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Starbucks",
+      "url": "https://www.starbucks.com",
+      "industry": "Food & Beverage",
+      "region": "Global"
+    },
+    {
+      "name": "Target",
+      "url": "https://www.target.com",
+      "industry": "Retail",
+      "region": "United States"
+    },
+    {
+      "name": "Tesco",
+      "url": "https://www.tescoplc.com",
+      "industry": "Retail",
+      "region": "United Kingdom"
+    },
+    {
+      "name": "UBS",
+      "url": "https://www.ubs.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "Visa",
+      "url": "https://www.visa.com",
+      "industry": "Financial Services",
+      "region": "Global"
+    },
+    {
+      "name": "Volkswagen",
+      "url": "https://www.volkswagenag.com",
+      "industry": "Automotive",
+      "region": "Global"
+    },
+    {
+      "name": "Walt Disney Company",
+      "url": "https://thewaltdisneycompany.com",
+      "industry": "Entertainment",
+      "region": "Global"
+    },
+    {
+      "name": "Zurich Insurance",
+      "url": "https://www.zurich.com",
+      "industry": "Insurance",
+      "region": "Global"
+    },
+    {
+      "name": "American Express",
+      "url": "https://www.americanexpress.com",
+      "industry": "Financial Services",
+      "region": "Global"
+    },
+    {
+      "name": "Barclays",
+      "url": "https://www.barclays.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "Bristol-Myers Squibb",
+      "url": "https://www.bms.com",
+      "industry": "Pharmaceuticals",
+      "region": "Global"
+    },
+    {
+      "name": "Caterpillar",
+      "url": "https://www.caterpillar.com",
+      "industry": "Manufacturing",
+      "region": "Global"
+    },
+    {
+      "name": "Citigroup",
+      "url": "https://www.citigroup.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "Comcast",
+      "url": "https://corporate.comcast.com",
+      "industry": "Telecommunications",
+      "region": "United States"
+    },
+    {
+      "name": "Credit Suisse",
+      "url": "https://www.credit-suisse.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "DHL",
+      "url": "https://www.dhl.com",
+      "industry": "Logistics",
+      "region": "Global"
+    },
+    {
+      "name": "Ericsson",
+      "url": "https://www.ericsson.com",
+      "industry": "Telecommunications",
+      "region": "Global"
+    },
+    {
+      "name": "General Motors",
+      "url": "https://www.gm.com",
+      "industry": "Automotive",
+      "region": "Global"
+    },
+    {
+      "name": "GlaxoSmithKline",
+      "url": "https://www.gsk.com",
+      "industry": "Pharmaceuticals",
+      "region": "Global"
+    },
+    {
+      "name": "Hitachi",
+      "url": "https://www.hitachi.com",
+      "industry": "Conglomerate",
+      "region": "Global"
+    },
+    {
+      "name": "Home Depot",
+      "url": "https://www.homedepot.com",
+      "industry": "Retail",
+      "region": "United States"
+    },
+    {
+      "name": "Huawei",
+      "url": "https://www.huawei.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Hyundai",
+      "url": "https://www.hyundai.com",
+      "industry": "Automotive",
+      "region": "Global"
+    },
+    {
+      "name": "IKEA",
+      "url": "https://www.ikea.com",
+      "industry": "Retail",
+      "region": "Global"
+    },
+    {
+      "name": "Infosys",
+      "url": "https://www.infosys.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Lenovo",
+      "url": "https://www.lenovo.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "L'Oréal",
+      "url": "https://www.loreal.com",
+      "industry": "Consumer Goods",
+      "region": "Global"
+    },
+    {
+      "name": "Morgan Stanley",
+      "url": "https://www.morganstanley.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "Netflix",
+      "url": "https://www.netflix.com",
+      "industry": "Entertainment",
+      "region": "Global"
+    },
+    {
+      "name": "PayPal",
+      "url": "https://www.paypal.com",
+      "industry": "Financial Services",
+      "region": "Global"
+    },
+    {
+      "name": "PwC",
+      "url": "https://www.pwc.com",
+      "industry": "Consulting",
+      "region": "Global"
+    },
+    {
+      "name": "Roche",
+      "url": "https://www.roche.com",
+      "industry": "Pharmaceuticals",
+      "region": "Global"
+    },
+    {
+      "name": "Sanofi",
+      "url": "https://www.sanofi.com",
+      "industry": "Pharmaceuticals",
+      "region": "Global"
+    },
+    {
+      "name": "Schneider Electric",
+      "url": "https://www.se.com",
+      "industry": "Energy Management",
+      "region": "Global"
+    },
+    {
+      "name": "Tata Consultancy Services",
+      "url": "https://www.tcs.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Telefónica",
+      "url": "https://www.telefonica.com",
+      "industry": "Telecommunications",
+      "region": "Global"
+    },
+    {
+      "name": "Thales",
+      "url": "https://www.thalesgroup.com",
+      "industry": "Aerospace & Defense",
+      "region": "Global"
+    },
+    {
+      "name": "Twitter",
+      "url": "https://about.twitter.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Uber",
+      "url": "https://www.uber.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "UnitedHealth Group",
+      "url": "https://www.unitedhealthgroup.com",
+      "industry": "Healthcare",
+      "region": "United States"
+    },
+    {
+      "name": "Vodafone",
+      "url": "https://www.vodafone.com",
+      "industry": "Telecommunications",
+      "region": "Global"
+    },
+    {
+      "name": "Wipro",
+      "url": "https://www.wipro.com",
+      "industry": "Technology",
+      "region": "Global"
+    }
+  ]
+}
