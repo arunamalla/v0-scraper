@@ -1,0 +1,84 @@
+{
+  "oracle_customers": [
+    {
+      "name": "Accenture",
+      "url": "https://www.accenture.com",
+      "industry": "Consulting",
+      "region": "Global"
+    },
+    {
+      "name": "AT&T",
+      "url": "https://www.att.com",
+      "industry": "Telecommunications",
+      "region": "United States"
+    },
+    {
+      "name": "Bank of America",
+      "url": "https://www.bankofamerica.com",
+      "industry": "Banking",
+      "region": "United States"
+    },
+    {
+      "name": "Cisco Systems",
+      "url": "https://www.cisco.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Deloitte",
+      "url": "https://www.deloitte.com",
+      "industry": "Consulting",
+      "region": "Global"
+    },
+    {
+      "name": "Dell Technologies",
+      "url": "https://www.dell.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "FedEx",
+      "url": "https://www.fedex.com",
+      "industry": "Logistics",
+      "region": "Global"
+    },
+    {
+      "name": "General Electric",
+      "url": "https://www.ge.com",
+      "industry": "Conglomerate",
+      "region": "Global"
+    },
+    {
+      "name": "HP Inc.",
+      "url": "https://www.hp.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "IBM",
+      "url": "https://www.ibm.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "Intel",
+      "url": "https://www.intel.com",
+      "industry": "Technology",
+      "region": "Global"
+    },
+    {
+      "name": "JPMorgan Chase",
+      "url": "https://www.jpmorganchase.com",
+      "industry": "Banking",
+      "region": "Global"
+    },
+    {
+      "name": "KPMG",
+      "url": "https://www.kpmg.com",
+      "industry": "
+
+```python file="requirements.txt"
+selenium>=4.0.0
+beautifulsoup4>=4.9.0
+requests>=2.25.0
+webdriver-manager>=3.5.0

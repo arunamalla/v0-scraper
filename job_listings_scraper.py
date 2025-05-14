@@ -1,806 +1,438 @@
-import requests
-from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
-import time
-import re
 import json
-import concurrent.futures
-import threading
-from urllib.parse import urljoin, urlparse
-from typing import List, Dict, Any, Set
+import logging
+import re
+import time
+from typing import Dict, List, Optional, Set
+from urllib.parse import urljoin
 
-from logger import Logger
-from error_handler import ErrorHandler
-from data_manager import DataManager
-from rate_limiter import RateLimiter
-from robots_parser import RobotsParser
-from url_tracker import URLTracker
-from utils import safe_request, retry_request
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+
+from platform_scrapers import PlatformScraperFactory
+
+logger = logging.getLogger(__name__)
 
 class JobListingsScraper:
-    """Scrape job listings from company career pages."""
+    """Scraper to extract job listings from career pages."""
     
-    def __init__(self, rate_limit_seconds=3, logger=None, error_handler=None, data_manager=None, url_tracker=None):
+    def __init__(self, headless: bool = True, timeout: int = 30):
         """Initialize the job listings scraper.
         
         Args:
-            rate_limit_seconds: Time to wait between requests
-            logger: Logger instance
-            error_handler: ErrorHandler instance
-            data_manager: DataManager instance
-            url_tracker: URLTracker instance
+            headless: Whether to run the browser in headless mode.
+            timeout: Default timeout for waiting for elements.
         """
-        self.logger = logger or Logger()
-        self.error_handler = error_handler or ErrorHandler(self.logger)
-        self.data_manager = data_manager or DataManager(logger=self.logger, error_handler=self.error_handler)
-        self.rate_limiter = RateLimiter(rate_limit_seconds, self.logger)
-        self.robots_parser = RobotsParser(self.logger, self.error_handler)
-        self.url_tracker = url_tracker or URLTracker(logger=self.logger, error_handler=self.error_handler)
+        self.timeout = timeout
+        self.headless = headless
         
-        self.job_listings = []
-        self.lock = threading.Lock()  # Lock for thread safety
+    def _create_driver(self) -> webdriver.Chrome:
+        """Create and configure a Chrome webdriver."""
+        chrome_options = Options()
+        if self.headless:
+            chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--window-size=1920,1080")
         
-        # Common job listing page identifiers
-        self.job_page_identifiers = [
-            "jobs", "careers", "positions", "vacancies", "opportunities", 
-            "openings", "join", "work with us", "current openings", "apply",
-            "job search", "search jobs", "browse jobs", "view jobs", "find jobs",
-            "job listings", "career opportunities", "open positions", "current vacancies",
-            "job board", "career explorer", "job explorer", "employment opportunities",
-            "job opportunities", "career listings", "job postings", "available positions",
-            "careers search", "job finder", "career finder", "work opportunities"
-        ]
-        
-        # Common job listing element selectors
-        self.job_listing_selectors = [
-            ".job-listing", ".job-item", ".job-card", ".job-posting", ".vacancy",
-            ".career-opportunity", ".position", ".job", "div[data-job]", "li[data-job]",
-            "tr.job-row", "div.job-row", "article.job"
-        ]
+        return webdriver.Chrome(options=chrome_options)
     
-    def scrape_job_listings(self, career_urls_file="career_urls.json", output_file="job_listings.json", 
-                           limit=None, max_workers=5, resume=True):
-        """Scrape job listings from company career pages.
+    def _find_job_listing_pages(self, driver: webdriver.Chrome, url: str) -> List[str]:
+        """Find job listing pages from a careers URL.
         
         Args:
-            career_urls_file: File containing career URLs
-            output_file: File to save the job listings to
-            limit: Maximum number of career URLs to process
-            max_workers: Maximum number of worker threads
-            resume: Whether to resume from a checkpoint
+            driver: Selenium webdriver instance.
+            url: URL of the careers page.
             
         Returns:
-            List of job listings
+            List of URLs to job listing pages.
         """
-        # Load career URLs
-        career_data = self.data_manager.load_data(career_urls_file)
-        if not career_data:
-            self.logger.error(f"No career URLs found in {career_urls_file}")
-            return []
+        job_pages = []
         
-        self.logger.info(f"Loaded {len(career_data)} career URLs")
+        # Common link text patterns that lead to job listings
+        job_link_patterns = [
+            r'job',
+            r'career',
+            r'position',
+            r'opening',
+            r'opportunit',
+            r'vacanc',
+            r'employ',
+            r'work with us',
+            r'join us',
+            r'current opening',
+            r'available position',
+            r'find.*job',
+            r'search.*job',
+            r'view.*job',
+            r'browse.*job',
+            r'explore.*career',
+            r'join.*team'
+        ]
         
-        # Load existing job listings if resuming
-        if resume:
-            checkpoint = self.url_tracker.load_checkpoint()
-            if checkpoint and checkpoint.get('stage') == 'job_listings':
-                self.logger.info("Resuming job listings scraping from checkpoint")
-                self.job_listings = self.data_manager.load_data(output_file) or []
+        # Compiled regular expressions for faster matching
+        job_link_regexes = [re.compile(pattern, re.IGNORECASE) for pattern in job_link_patterns]
+        
+        # Extract all links from the page
+        elements = driver.find_elements(By.TAG_NAME, "a")
+        
+        for element in elements:
+            try:
+                href = element.get_attribute("href")
+                text = element.text.strip()
                 
-                # Get the last processed index
-                last_index = checkpoint.get('last_index', 0)
-                
-                # If we have data and haven't finished, we can skip some career URLs
-                if self.job_listings and last_index < len(career_data):
-                    self.logger.info(f"Loaded {len(self.job_listings)} job listings from previous session")
-                    self.logger.info(f"Resuming from index {last_index}")
+                if not href or not text:
+                    continue
                     
-                    # Adjust career_data to start from where we left off
-                    career_data = career_data[last_index:]
+                # Check if link text matches any of our patterns
+                for regex in job_link_regexes:
+                    if regex.search(text):
+                        job_pages.append(href)
+                        logger.debug(f"Found job listing page: {href} with text: {text}")
+                        break
+            except Exception as e:
+                logger.debug(f"Error extracting link: {str(e)}")
+                continue
         
-        # Process only a subset if limit is specified
-        career_urls_to_process = career_data[:limit] if limit is not None else career_data
-        
-        # Filter out already visited URLs
-        unvisited_career_urls = []
-        for career_url_data in career_urls_to_process:
-            career_url = career_url_data.get("career_url")
-            if career_url and not self.url_tracker.is_job_url_visited(career_url + "_listings"):
-                unvisited_career_urls.append(career_url_data)
-        
-        self.logger.info(f"Scraping job listings from {len(unvisited_career_urls)} unvisited career URLs out of {len(career_urls_to_process)} total")
-        
-        # Use ThreadPoolExecutor for parallel processing
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit tasks
-            future_to_career = {
-                executor.submit(self._process_career_url, i, career_url_data, len(unvisited_career_urls), output_file): career_url_data
-                for i, career_url_data in enumerate(unvisited_career_urls)
-            }
+        # If we didn't find any job links via direct text matching, try other methods
+        if not job_pages:
+            # Method 2: Look for common URL patterns in all links
+            all_links = []
+            elements = driver.find_elements(By.TAG_NAME, "a")
             
-            # Process results as they complete
-            for future in concurrent.futures.as_completed(future_to_career):
-                career_url_data = future_to_career[future]
+            for element in elements:
                 try:
-                    future.result()  # This will re-raise any exceptions from the thread
-                except Exception as e:
-                    self.error_handler.handle_error(e, f"Error processing career URL {career_url_data.get('career_url')}")
-        
-        # Final save
-        self.data_manager.save_data(self.job_listings, output_file)
-        
-        # Clear checkpoint since we're done with this stage
-        self.url_tracker.clear_checkpoint()
-        
-        return self.job_listings
-    
-    def _process_career_url(self, index, career_url_data, total, output_file):
-        """Process a single career URL.
-        
-        Args:
-            index: Index of the career URL in the list
-            career_url_data: Career URL data
-            total: Total number of career URLs
-            output_file: File to save the job listings to
-        """
-        career_url = career_url_data.get("career_url")
-        company_name = career_url_data.get("company_name")
-        
-        if not career_url:
-            self.logger.warning(f"No career URL found for {company_name}")
-            return
-        
-        # Mark this URL as visited to avoid re-scraping
-        visit_key = career_url + "_listings"
-        if self.url_tracker.is_job_url_visited(visit_key):
-            self.logger.info(f"Already visited {career_url}, skipping")
-            return
-        
-        self.logger.info(f"Processing career URL {index+1}/{total}: {company_name} - {career_url}")
-        
-        # Check if crawling is allowed
-        if not self.robots_parser.is_allowed('*', career_url):
-            self.logger.warning(f"Crawling not allowed for {career_url}")
-            return
-        
-        try:
-            # Apply rate limiting
-            self.rate_limiter.limit()
-            
-            # First try to find job listings on the career page itself
-            job_listings = self._scrape_job_listings_from_url(career_url, company_name)
-            
-            # If no job listings found, try to find job listing pages
-            if not job_listings:
-                job_listing_urls = self._find_job_listing_pages(career_url)
-                
-                for job_url in job_listing_urls:
-                    # Apply rate limiting
-                    self.rate_limiter.limit()
-                    
-                    # Scrape job listings from the job listing page
-                    page_listings = self._scrape_job_listings_from_url(job_url, company_name)
-                    job_listings.extend(page_listings)
-            
-            if job_listings:
-                self.logger.info(f"Found {len(job_listings)} job listings for {company_name}")
-                
-                # Thread-safe update of job_listings list
-                with self.lock:
-                    self.job_listings.extend(job_listings)
-                    
-                    # Save checkpoint
-                    self.url_tracker.save_checkpoint({
-                        'stage': 'job_listings',
-                        'last_index': index,
-                        'job_listings_count': len(self.job_listings)
-                    })
-                    
-                    # Save after each successful scrape to avoid losing data
-                    self.data_manager.save_data(self.job_listings, output_file)
-            else:
-                self.logger.warning(f"No job listings found for {company_name}")
-            
-            # Mark this URL as visited
-            self.url_tracker.add_job_url(visit_key)
-            
-        except Exception as e:
-            self.error_handler.handle_error(e, f"Error processing career URL {career_url}")
-    
-    def _find_job_listing_pages(self, career_url):
-        """Find job listing pages from a career URL.
-        
-        Args:
-            career_url: URL of the career page
-            
-        Returns:
-            List of job listing page URLs
-        """
-        job_listing_urls = []
-        
-        try:
-            self.logger.info(f"Looking for job listing pages on {career_url}")
-            response = safe_request(career_url)
-        
-            if not response:
-                self.logger.error(f"Failed to fetch {career_url}")
-                return job_listing_urls
-        
-            soup = BeautifulSoup(response.content, 'html.parser')
-        
-            # Method 1: Look for links with specific text patterns
-            for link in soup.find_all('a'):
-                href = link.get('href')
-                if not href:
-                    continue
-                
-                link_text = link.get_text().lower().strip()
-            
-                # Check if the link text contains job listing page identifiers
-                if any(identifier in link_text for identifier in self.job_page_identifiers):
-                    # Make sure the URL is absolute
-                    if not href.startswith(('http://', 'https://')):
-                        href = urljoin(career_url, href)
-                
-                    self.logger.info(f"Found job listing page via text match: '{link_text}' -> {href}")
-                    job_listing_urls.append(href)
-        
-            # Method 2: Look for links with specific URL patterns
-            job_url_patterns = [
-                r'/jobs/?', r'/careers/jobs/?', r'/careers/search/?', r'/careers/openings/?',
-                r'/job-search/?', r'/positions/?', r'/vacancies/?', r'/opportunities/?',
-                r'/careers/listings/?', r'/careers/positions/?', r'/careers/opportunities/?',
-                r'/careers/browse/?', r'/careers/find/?', r'/careers/view/?',
-                r'/job-listings/?', r'/job-board/?', r'/career-explorer/?', r'/job-explorer/?'
-            ]
-        
-            for link in soup.find_all('a'):
-                href = link.get('href')
-                if not href:
-                    continue
-                
-                # Check if the URL matches any of the patterns
-                if any(re.search(pattern, href, re.IGNORECASE) for pattern in job_url_patterns):
-                    # Make sure the URL is absolute
-                    if not href.startswith(('http://', 'https://')):
-                        href = urljoin(career_url, href)
-                
-                    self.logger.info(f"Found job listing page via URL pattern: {href}")
-                    if href not in job_listing_urls:
-                        job_listing_urls.append(href)
-        
-            # Method 3: Look for common job board platforms
-            job_platform_patterns = [
-                r'workday\.com', r'lever\.co', r'greenhouse\.io', r'recruitee\.com',
-                r'jobvite\.com', r'smartrecruiters\.com', r'taleo\.net', r'brassring\.com',
-                r'icims\.com', r'successfactors\.com', r'bamboohr\.com', r'paylocity\.com',
-                r'applytojob\.com', r'recruitingbypaycor\.com', r'ultipro\.com', r'myworkdayjobs\.com',
-                r'applicantpro\.com', r'paycom\.com', r'adp\.com', r'indeed\.com',
-                r'linkedin\.com/jobs', r'glassdoor\.com/job', r'monster\.com', r'ziprecruiter\.com',
-                r'careers\..*?\.com', r'jobs\..*?\.com'
-            ]
-        
-            for link in soup.find_all('a'):
-                href = link.get('href')
-                if not href:
-                    continue
-                
-                # Check if the URL matches any of the job platform patterns
-                if any(re.search(pattern, href, re.IGNORECASE) for pattern in job_platform_patterns):
-                    # Make sure the URL is absolute
-                    if not href.startswith(('http://', 'https://')):
-                        href = urljoin(career_url, href)
-                
-                    self.logger.info(f"Found job listing page via job platform: {href}")
-                    if href not in job_listing_urls:
-                        job_listing_urls.append(href)
-        
-            # Method 4: Look for buttons that might lead to job listings
-            button_texts = [
-                "view jobs", "search jobs", "browse jobs", "find jobs", "see jobs",
-                "explore jobs", "job search", "current openings", "open positions",
-                "view opportunities", "see opportunities", "explore opportunities"
-            ]
-        
-            for button in soup.find_all(['button', 'a'], class_=lambda c: c and any(cls in c.lower() for cls in ['btn', 'button'])):
-                button_text = button.get_text().lower().strip()
-            
-                if any(text in button_text for text in button_texts):
-                    href = button.get('href')
+                    href = element.get_attribute("href")
                     if href:
-                        # Make sure the URL is absolute
-                        if not href.startswith(('http://', 'https://')):
-                            href = urljoin(career_url, href)
-                    
-                        self.logger.info(f"Found job listing page via button: '{button_text}' -> {href}")
-                        if href not in job_listing_urls:
-                            job_listing_urls.append(href)
+                        all_links.append(href)
+                except Exception:
+                    continue
+            
+            url_patterns = [
+                r'/jobs/?',
+                r'/careers?/',
+                r'/careers?/jobs',
+                r'/opportunities',
+                r'/openings',
+                r'/positions',
+                r'/vacancies',
+                r'/recruiting',
+                r'/work-with-us',
+                r'/join-us',
+                r'/joinourteam',
+                r'/employment',
+                r'/career-search',
+                r'/job-search',
+                r'/career-opportunities'
+            ]
+            
+            url_regexes = [re.compile(pattern, re.IGNORECASE) for pattern in url_patterns]
+            
+            for link in all_links:
+                for regex in url_regexes:
+                    if regex.search(link):
+                        job_pages.append(link)
+                        logger.debug(f"Found job listing page by URL pattern: {link}")
+                        break
         
-            # Method 5: If no job listing pages found, try to find iframes that might contain job listings
-            if not job_listing_urls:
-                for iframe in soup.find_all('iframe'):
-                    src = iframe.get('src')
-                    if src:
-                        # Make sure the URL is absolute
-                        if not src.startswith(('http://', 'https://')):
-                            src = urljoin(career_url, src)
-                    
-                    # Check if the iframe src contains job listing page identifiers or platform patterns
-                    if (any(identifier in src.lower() for identifier in self.job_page_identifiers) or
-                        any(re.search(pattern, src, re.IGNORECASE) for pattern in job_platform_patterns)):
-                        self.logger.info(f"Found job listing iframe: {src}")
-                        job_listing_urls.append(src)
+        # Method 3: Look for buttons that might lead to job listings
+        if not job_pages:
+            button_selectors = [
+                "button",
+                ".btn",
+                ".button",
+                "[role='button']",
+                "a.cta",
+                "a.btn",
+                "a.button"
+            ]
+            
+            for selector in button_selectors:
+                buttons = driver.find_elements(By.CSS_SELECTOR, selector)
+                
+                for button in buttons:
+                    try:
+                        text = button.text.strip().lower()
+                        
+                        # Check for job-related button text
+                        if any(re.search(regex, text) for regex in job_link_regexes):
+                            # If it's a link, add the href
+                            if button.tag_name == "a":
+                                href = button.get_attribute("href")
+                                if href:
+                                    job_pages.append(href)
+                                    logger.debug(f"Found job listing page from button link: {href}")
+                            # Otherwise try to click it and get the current URL after navigation
+                            else:
+                                current_url = driver.current_url
+                                button.click()
+                                time.sleep(2)  # Wait for navigation
+                                
+                                # If we navigated to a new page, record it
+                                if driver.current_url != current_url:
+                                    job_pages.append(driver.current_url)
+                                    logger.debug(f"Found job listing page after button click: {driver.current_url}")
+                                    
+                                # Go back to continue searching
+                                driver.back()
+                                time.sleep(1)
+                    except Exception as e:
+                        logger.debug(f"Error with button: {str(e)}")
+                        continue
         
-            # Method 6: If still no job listing pages found, check if the career URL itself is a job listing page
-            if not job_listing_urls:
-                # Check if the URL contains job listing indicators
-                if (any(identifier in career_url.lower() for identifier in self.job_page_identifiers) or
-                    any(re.search(pattern, career_url, re.IGNORECASE) for pattern in job_platform_patterns)):
-                    self.logger.info(f"Career URL itself appears to be a job listing page: {career_url}")
-                    job_listing_urls.append(career_url)
+        # Convert relative URLs to absolute
+        job_pages = [urljoin(url, page) if not page.startswith(('http://', 'https://')) else page for page in job_pages]
         
-            return job_listing_urls
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_job_pages = []
+        for page in job_pages:
+            if page not in seen:
+                seen.add(page)
+                unique_job_pages.append(page)
         
-        except Exception as e:
-            self.error_handler.handle_error(e, f"Error finding job listing pages for {career_url}")
-            return job_listing_urls
+        logger.info(f"Found {len(unique_job_pages)} potential job listing pages for {url}")
+        return unique_job_pages
     
-    def _scrape_job_listings_from_url(self, url, company_name):
-        """Scrape job listings from a URL.
+    def _extract_job_listings(self, driver: webdriver.Chrome, url: str) -> List[Dict[str, str]]:
+        """Extract job listings from a job listings page.
         
         Args:
-            url: URL to scrape
-            company_name: Name of the company
+            driver: Selenium webdriver instance.
+            url: URL of the job listings page.
             
         Returns:
-            List of job listings
+            List of dictionaries containing job information.
         """
+        # First, check if this is a known job platform
+        platform_scraper = PlatformScraperFactory.create_scraper(url)
+        if platform_scraper:
+            # Use the specialized platform scraper
+            return platform_scraper.scrape_job_listings(url)
+        
+        # If no specialized scraper was found, use the generic scraper
         job_listings = []
         
         try:
-            self.logger.info(f"Scraping job listings from {url}")
+            # Scroll to load all job listings (for lazy-loaded content)
+            last_height = driver.execute_script("return document.body.scrollHeight")
+            while True:
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(2)  # Wait for page to load
+                new_height = driver.execute_script("return document.body.scrollHeight")
+                if new_height == last_height:
+                    break
+                last_height = new_height
             
-            # Try with regular requests first
-            response = safe_request(url)
+            # Parse the page source
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
             
-            if not response:
-                self.logger.error(f"Failed to fetch {url}")
-                return job_listings
+            # Common CSS selectors for job listings containers
+            container_selectors = [
+                ".jobs-list", 
+                ".job-listings", 
+                ".careers-list",
+                ".job-list",
+                ".openings",
+                ".positions",
+                ".vacancies",
+                "ul.jobs",
+                "div.jobs",
+                "[data-job-list]",
+                ".job-container"
+            ]
             
-            # Check if the page is likely to be a job board
-            is_job_board = self._is_job_board(response.content)
+            # Try to find a container for job listings
+            container = None
+            for selector in container_selectors:
+                container = soup.select_one(selector)
+                if container:
+                    break
             
-            if is_job_board:
-                # Try to extract job listings with BeautifulSoup
-                soup = BeautifulSoup(response.content, 'html.parser')
+            # If no container found, use the whole body
+            if not container:
+                container = soup.body
+            
+            # Common CSS selectors for individual job elements
+            job_selectors = [
+                ".job-item",
+                ".job-listing",
+                ".job-card",
+                ".job",
+                ".opening",
+                ".position",
+                ".vacancy",
+                "[data-job-id]",
+                "[data-job]",
+                ".career-item",
+                "li.job",
+                "div.job"
+            ]
+            
+            # Try to find job elements using these selectors
+            job_elements = []
+            for selector in job_selectors:
+                job_elements = container.select(selector)
+                if job_elements:
+                    break
+            
+            # If no job elements found using selectors, try to find them by looking for links with job-related text
+            if not job_elements:
+                job_elements = []
+                job_link_patterns = [
+                    r'job',
+                    r'position',
+                    r'opening',
+                    r'apply',
+                    r'career'
+                ]
                 
-                # Try different selectors for job listings
-                for selector in self.job_listing_selectors:
-                    job_elements = soup.select(selector)
-                    
-                    if job_elements:
-                        self.logger.info(f"Found {len(job_elements)} job listings using selector: {selector}")
-                        
-                        for job_element in job_elements:
-                            job_data = self._extract_job_data(job_element, url, company_name)
-                            if job_data:
-                                job_listings.append(job_data)
-                        
-                        # If we found job listings with this selector, no need to try others
+                job_link_regexes = [re.compile(pattern, re.IGNORECASE) for pattern in job_link_patterns]
+                
+                # Find links that might be job listings
+                links = container.find_all('a')
+                for link in links:
+                    if link.text and any(regex.search(link.text) for regex in job_link_regexes):
+                        # Check if this link is wrapped in a container element
+                        parent = link.parent
+                        if parent and parent.name in ['div', 'li', 'article', 'section']:
+                            job_elements.append(parent)
+                        else:
+                            # Use the link itself
+                            job_elements.append(link)
+            
+            # Process each job element
+            for job_element in job_elements:
+                job_data = {}
+                
+                # Extract job title
+                title_elements = job_element.select('h2, h3, h4, .job-title, .position-title')
+                if title_elements:
+                    job_data['title'] = title_elements[0].get_text(strip=True)
+                else:
+                    # Try finding an 'a' tag that might contain the job title
+                    link = job_element.find('a')
+                    if link and link.text:
+                        job_data['title'] = link.get_text(strip=True)
+                
+                # Extract job URL
+                links = job_element.find_all('a')
+                for link in links:
+                    href = link.get('href')
+                    if href:
+                        # Handle relative URLs
+                        job_url = urljoin(url, href) if not href.startswith(('http://', 'https://')) else href
+                        job_data['url'] = job_url
                         break
                 
-                # If no job listings found with selectors, try a more generic approach
-                if not job_listings:
-                    job_listings = self._extract_job_listings_generic(soup, url, company_name)
+                # Extract job location
+                location_elements = job_element.select('.location, .job-location, .position-location')
+                if location_elements:
+                    job_data['location'] = location_elements[0].get_text(strip=True)
                 
-                # If still no job listings found, try with Playwright for JavaScript-heavy pages
-                if not job_listings:
-                    self.logger.info(f"No job listings found with BeautifulSoup, trying with Playwright")
-                    job_listings = self._scrape_job_listings_with_playwright(url, company_name)
-            else:
-                # Not a job board, try with Playwright
-                self.logger.info(f"Page doesn't appear to be a job board, trying with Playwright")
-                job_listings = self._scrape_job_listings_with_playwright(url, company_name)
-            
-            return job_listings
-            
-        except Exception as e:
-            self.error_handler.handle_error(e, f"Error scraping job listings from {url}")
-            return job_listings
-    
-    def _is_job_board(self, content):
-        """Check if a page is likely to be a job board.
-        
-        Args:
-            content: Page content
-            
-        Returns:
-            True if the page is likely to be a job board, False otherwise
-        """
-        try:
-            # Convert content to string if it's bytes
-            if isinstance(content, bytes):
-                content_str = content.decode('utf-8', errors='ignore')
-            else:
-                content_str = content
-            
-            # Check for common job board indicators
-            job_board_indicators = [
-                "job", "career", "position", "vacancy", "opening", "apply",
-                "job title", "job description", "requirements", "qualifications",
-                "full-time", "part-time", "remote", "location", "department"
-            ]
-            
-            # Count how many indicators are present
-            indicator_count = sum(1 for indicator in job_board_indicators if indicator in content_str.lower())
-            
-            # If at least 3 indicators are present, it's likely a job board
-            return indicator_count >= 3
-            
-        except Exception:
-            # If there's an error, assume it's not a job board
-            return False
-    
-    def _extract_job_data(self, job_element, base_url, company_name):
-        """Extract job data from a job listing element.
-        
-        Args:
-            job_element: BeautifulSoup element containing job data
-            base_url: Base URL for resolving relative URLs
-            company_name: Name of the company
-            
-        Returns:
-            Dictionary containing job data
-        """
-        try:
-            job_data = {
-                "company_name": company_name,
-                "source_url": base_url
-            }
-            
-            # Extract job title
-            title_element = job_element.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) or job_element.find(class_=lambda c: c and any(x in c.lower() for x in ['title', 'position', 'role']))
-            if title_element:
-                job_data["title"] = title_element.get_text().strip()
-            else:
-                # Try to find the most prominent text in the element
-                texts = [t for t in job_element.stripped_strings]
-                if texts:
-                    job_data["title"] = texts[0]
-            
-            # If no title found, skip this job
-            if not job_data.get("title"):
-                return None
-            
-            # Extract job URL
-            link_element = job_element.find('a')
-            if link_element and link_element.get('href'):
-                href = link_element.get('href')
-                if not href.startswith(('http://', 'https://')):
-                    href = urljoin(base_url, href)
-                job_data["url"] = href
-            
-            # Extract job location
-            location_element = job_element.find(string=re.compile(r'location|city|state|country', re.I)) or job_element.find(class_=lambda c: c and 'location' in c.lower())
-            if location_element:
-                if location_element.parent and location_element.parent.name != 'a':
-                    # If the location is not a link, get the text after the label
-                    location_text = location_element.get_text().strip()
-                    # Try to extract just the location part
-                    location_match = re.search(r'(?:location|city|state|country)[:\s]+(.+)', location_text, re.I)
-                    if location_match:
-                        job_data["location"] = location_match.group(1).strip()
-                    else:
-                        job_data["location"] = location_text
-                else:
-                    # If the location is a link, get the next sibling's text
-                    next_sibling = location_element.next_sibling
-                    if next_sibling:
-                        job_data["location"] = next_sibling.strip()
-            
-            # Extract job department
-            department_element = job_element.find(string=re.compile(r'department|team|division', re.I)) or job_element.find(class_=lambda c: c and 'department' in c.lower())
-            if department_element:
-                if department_element.parent and department_element.parent.name != 'a':
-                    # If the department is not a link, get the text after the label
-                    department_text = department_element.get_text().strip()
-                    # Try to extract just the department part
-                    department_match = re.search(r'(?:department|team|division)[:\s]+(.+)', department_text, re.I)
-                    if department_match:
-                        job_data["department"] = department_match.group(1).strip()
-                    else:
-                        job_data["department"] = department_text
-                else:
-                    # If the department is a link, get the next sibling's text
-                    next_sibling = department_element.next_sibling
-                    if next_sibling:
-                        job_data["department"] = next_sibling.strip()
-            
-            # Extract job type (full-time, part-time, etc.)
-            job_type_element = job_element.find(string=re.compile(r'type|time|employment', re.I)) or job_element.find(class_=lambda c: c and 'type' in c.lower())
-            if job_type_element:
-                if job_type_element.parent and job_type_element.parent.name != 'a':
-                    # If the job type is not a link, get the text after the label
-                    job_type_text = job_type_element.get_text().strip()
-                    # Try to extract just the job type part
-                    job_type_match = re.search(r'(?:type|time|employment)[:\s]+(.+)', job_type_text, re.I)
-                    if job_type_match:
-                        job_data["job_type"] = job_type_match.group(1).strip()
-                    else:
-                        job_data["job_type"] = job_type_text
-                else:
-                    # If the job type is a link, get the next sibling's text
-                    next_sibling = job_type_element.next_sibling
-                    if next_sibling:
-                        job_data["job_type"] = next_sibling.strip()
-            
-            # Extract job description
-            description_element = job_element.find(class_=lambda c: c and 'description' in c.lower())
-            if description_element:
-                job_data["description"] = description_element.get_text().strip()
-            
-            # Extract job date
-            date_element = job_element.find(string=re.compile(r'date|posted', re.I)) or job_element.find(class_=lambda c: c and ('date' in c.lower() or 'posted' in c.lower()))
-            if date_element:
-                if date_element.parent and date_element.parent.name != 'a':
-                    # If the date is not a link, get the text after the label
-                    date_text = date_element.get_text().strip()
-                    # Try to extract just the date part
-                    date_match = re.search(r'(?:date|posted)[:\s]+(.+)', date_text, re.I)
-                    if date_match:
-                        job_data["date_posted"] = date_match.group(1).strip()
-                    else:
-                        job_data["date_posted"] = date_text
-                else:
-                    # If the date is a link, get the next sibling's text
-                    next_sibling = date_element.next_sibling
-                    if next_sibling:
-                        job_data["date_posted"] = next_sibling.strip()
-            
-            return job_data
-            
-        except Exception as e:
-            self.error_handler.handle_error(e, "Error extracting job data")
-            return None
-    
-    def _extract_job_listings_generic(self, soup, base_url, company_name):
-        """Extract job listings using a more generic approach.
-        
-        Args:
-            soup: BeautifulSoup object
-            base_url: Base URL for resolving relative URLs
-            company_name: Name of the company
-            
-        Returns:
-            List of job listings
-        """
-        job_listings = []
-        
-        try:
-            # Look for tables that might contain job listings
-            tables = soup.find_all('table')
-            for table in tables:
-                # Check if this table is likely to contain job listings
-                headers = [th.get_text().strip().lower() for th in table.find_all('th')]
-                if headers and any(header in ['title', 'position', 'job', 'role'] for header in headers):
-                    # This table likely contains job listings
-                    rows = table.find_all('tr')[1:]  # Skip header row
-                    for row in rows:
-                        cells = row.find_all(['td', 'th'])
-                        if len(cells) >= 2:
-                            job_data = {
-                                "company_name": company_name,
-                                "source_url": base_url
-                            }
-                            
-                            # Try to map cells to job data based on headers
-                            for i, header in enumerate(headers):
-                                if i < len(cells):
-                                    cell_text = cells[i].get_text().strip()
-                                    if 'title' in header or 'position' in header or 'job' in header or 'role' in header:
-                                        job_data["title"] = cell_text
-                                    elif 'location' in header:
-                                        job_data["location"] = cell_text
-                                    elif 'department' in header or 'team' in header:
-                                        job_data["department"] = cell_text
-                                    elif 'type' in header or 'time' in header:
-                                        job_data["job_type"] = cell_text
-                                    elif 'date' in header or 'posted' in header:
-                                        job_data["date_posted"] = cell_text
-                            
-                            # Extract job URL
-                            link = row.find('a')
-                            if link and link.get('href'):
-                                href = link.get('href')
-                                if not href.startswith(('http://', 'https://')):
-                                    href = urljoin(base_url, href)
-                                job_data["url"] = href
-                            
-                            # Only add if we have a title
-                            if job_data.get("title"):
-                                job_listings.append(job_data)
-            
-            # If no job listings found in tables, look for lists
-            if not job_listings:
-                lists = soup.find_all(['ul', 'ol'])
-                for list_element in lists:
-                    # Check if this list is likely to contain job listings
-                    list_items = list_element.find_all('li')
-                    if list_items and all(li.find('a') for li in list_items[:5]):
-                        # This list likely contains job listings
-                        for item in list_items:
-                            link = item.find('a')
-                            if link:
-                                job_data = {
-                                    "company_name": company_name,
-                                    "source_url": base_url,
-                                    "title": link.get_text().strip()
-                                }
-                                
-                                href = link.get('href')
-                                if href and not href.startswith(('http://', 'https://')):
-                                    href = urljoin(base_url, href)
-                                job_data["url"] = href
-                                
-                                # Try to extract location if it's in the list item
-                                item_text = item.get_text()
-                                location_match = re.search(r'$$([^)]+)$$', item_text)
-                                if location_match:
-                                    job_data["location"] = location_match.group(1).strip()
-                                
-                                # Only add if we have a title
-                                if job_data.get("title"):
-                                    job_listings.append(job_data)
-            
-            return job_listings
-            
-        except Exception as e:
-            self.error_handler.handle_error(e, "Error extracting job listings with generic approach")
-            return job_listings
-    
-    def _scrape_job_listings_with_playwright(self, url, company_name):
-        """Scrape job listings using Playwright for JavaScript-heavy pages.
-        
-        Args:
-            url: URL to scrape
-            company_name: Name of the company
-            
-        Returns:
-            List of job listings
-        """
-        job_listings = []
-        
-        try:
-            self.logger.info(f"Scraping job listings with Playwright from {url}")
-            
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
+                # Extract job department/category
+                department_elements = job_element.select('.department, .category, .job-department, .job-category')
+                if department_elements:
+                    job_data['department'] = department_elements[0].get_text(strip=True)
                 
-                try:
-                    page.goto(url, timeout=60000)
+                # Only add if we have at least a title and URL
+                if 'title' in job_data and 'url' in job_data:
+                    job_listings.append(job_data)
+            
+            logger.info(f"Extracted {len(job_listings)} job listings from {url}")
+            
+        except Exception as e:
+            logger.error(f"Error extracting job listings from {url}: {str(e)}")
+        
+        return job_listings
+    
+    def scrape(self, careers_urls: List[str]) -> List[Dict[str, str]]:
+        """Scrape job listings from a list of career URLs.
+        
+        Args:
+            careers_urls: List of career page URLs to scrape.
+            
+        Returns:
+            List of dictionaries containing job information.
+        """
+        all_job_listings = []
+        processed_urls = set()  # To avoid processing the same URL multiple times
+        
+        for career_url in careers_urls:
+            logger.info(f"Processing career URL: {career_url}")
+            
+            driver = self._create_driver()
+            
+            try:
+                # Navigate to the career page
+                driver.get(career_url)
+                WebDriverWait(driver, self.timeout).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                
+                # Find job listing pages
+                job_listing_pages = self._find_job_listing_pages(driver, career_url)
+                
+                # If no job listing pages found, try to extract job listings from the current page
+                if not job_listing_pages:
+                    logger.info(f"No job listing pages found, trying to extract listings from {career_url}")
+                    job_listings = self._extract_job_listings(driver, career_url)
+                    all_job_listings.extend(job_listings)
                     
-                    # Wait for the page to load
-                    page.wait_for_timeout(5000)
-                    
-                    # Try to find and click "Show all jobs" or similar buttons
-                    show_all_buttons = [
-                        "text=Show all", "text=View all", "text=See all", 
-                        "text=All jobs", "text=All positions", "text=All openings"
-                    ]
-                    
-                    for button_selector in show_all_buttons:
+                # Otherwise, visit each job listing page and extract listings
+                else:
+                    for job_page_url in job_listing_pages:
+                        if job_page_url in processed_urls:
+                            logger.info(f"Skipping already processed URL: {job_page_url}")
+                            continue
+                            
+                        logger.info(f"Visiting job listing page: {job_page_url}")
+                        
                         try:
-                            if page.locator(button_selector).count() > 0:
-                                self.logger.info(f"Clicking '{button_selector}' button")
-                                page.click(button_selector)
-                                page.wait_for_timeout(3000)
-                                break
-                        except:
-                            pass
-                    
-                    # Handle pagination if present
-                    has_pagination = False
-                    pagination_selectors = [
-                        "a.pagination", "ul.pagination", "div.pagination",
-                        "a.pager", "ul.pager", "div.pager",
-                        "button:has-text('Next')", "a:has-text('Next')"
-                    ]
-                    
-                    for selector in pagination_selectors:
-                        if page.locator(selector).count() > 0:
-                            has_pagination = True
-                            break
-                    
-                    if has_pagination:
-                        self.logger.info("Pagination detected, processing all pages")
-                        
-                        page_num = 1
-                        max_pages = 20  # Limit to 20 pages to avoid infinite loops
-                        
-                        while page_num <= max_pages:
-                            # Extract job listings from current page
-                            current_content = page.content()
-                            soup = BeautifulSoup(current_content, 'html.parser')
+                            driver.get(job_page_url)
+                            WebDriverWait(driver, self.timeout).until(
+                                EC.presence_of_element_located((By.TAG_NAME, "body"))
+                            )
                             
-                            # Try different selectors for job listings
-                            page_listings = []
-                            for selector in self.job_listing_selectors:
-                                job_elements = soup.select(selector)
-                                
-                                if job_elements:
-                                    self.logger.info(f"Found {len(job_elements)} job listings on page {page_num} using selector: {selector}")
-                                    
-                                    for job_element in job_elements:
-                                        job_data = self._extract_job_data(job_element, url, company_name)
-                                        if job_data:
-                                            page_listings.append(job_data)
-                                    
-                                    # If we found job listings with this selector, no need to try others
-                                    break
+                            job_listings = self._extract_job_listings(driver, job_page_url)
+                            all_job_listings.extend(job_listings)
                             
-                            # If no job listings found with selectors, try a more generic approach
-                            if not page_listings:
-                                page_listings = self._extract_job_listings_generic(soup, url, company_name)
+                            processed_urls.add(job_page_url)
                             
-                            job_listings.extend(page_listings)
-                            
-                            # Try to click the "Next" button
-                            next_button_selectors = [
-                                "button:has-text('Next')", "a:has-text('Next')",
-                                "button.next", "a.next", "li.next a",
-                                "button[aria-label='Next']", "a[aria-label='Next']"
-                            ]
-                            
-                            clicked_next = False
-                            for selector in next_button_selectors:
-                                try:
-                                    next_button = page.locator(selector)
-                                    if next_button.count() > 0 and next_button.is_enabled() and next_button.is_visible():
-                                        self.logger.info(f"Clicking 'Next' button (page {page_num})")
-                                        next_button.click()
-                                        page.wait_for_timeout(3000)
-                                        clicked_next = True
-                                        break
-                                except:
-                                    pass
-                            
-                            if not clicked_next:
-                                self.logger.info(f"No more 'Next' button found, stopping at page {page_num}")
-                                break
-                            
-                            page_num += 1
-                    else:
-                        # No pagination, just extract job listings from the current page
-                        current_content = page.content()
-                        soup = BeautifulSoup(current_content, 'html.parser')
-                        
-                        # Try different selectors for job listings
-                        for selector in self.job_listing_selectors:
-                            job_elements = soup.select(selector)
-                            
-                            if job_elements:
-                                self.logger.info(f"Found {len(job_elements)} job listings using selector: {selector}")
-                                
-                                for job_element in job_elements:
-                                    job_data = self._extract_job_data(job_element, url, company_name)
-                                    if job_data:
-                                        job_listings.append(job_data)
-                                
-                                # If we found job listings with this selector, no need to try others
-                                break
-                        
-                        # If no job listings found with selectors, try a more generic approach
-                        if not job_listings:
-                            job_listings = self._extract_job_listings_generic(soup, url, company_name)
+                        except Exception as e:
+                            logger.error(f"Error processing job page {job_page_url}: {str(e)}")
                 
-                except Exception as e:
-                    self.error_handler.handle_error(e, f"Error scraping job listings with Playwright from {url}")
-                finally:
-                    browser.close()
+            except Exception as e:
+                logger.error(f"Error processing career URL {career_url}: {str(e)}")
+            finally:
+                driver.quit()
+        
+        # Remove duplicates by URL
+        unique_listings = []
+        seen_urls = set()
+        
+        for listing in all_job_listings:
+            if listing.get('url') not in seen_urls:
+                seen_urls.add(listing.get('url'))
+                unique_listings.append(listing)
+        
+        logger.info(f"Total unique job listings found: {len(unique_listings)}")
+        return unique_listings
+    
+    def save_to_file(self, job_listings: List[Dict[str, str]], filename: str) -> None:
+        """Save job listings to a JSON file.
+        
+        Args:
+            job_listings: List of dictionaries containing job information.
+            filename: Path to the output file.
+        """
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(job_listings, f, indent=2, ensure_ascii=False)
             
-            return job_listings
-            
-        except Exception as e:
-            self.error_handler.handle_error(e, f"Error initializing Playwright for {url}")
-            return job_listings
+        logger.info(f"Saved {len(job_listings)} job listings to {filename}")

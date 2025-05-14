@@ -1,158 +1,84 @@
 # Oracle Customer Success Scraper
 
-This project scrapes customer success stories from Oracle's website, extracts career URLs from customer websites, collects job listings from those career pages, and gathers detailed job descriptions from individual job postings.
+A comprehensive web scraping tool designed to extract job listings from Oracle customer websites. This tool includes specialized scrapers for common job platforms like Workday, Lever, and Greenhouse.
 
 ## Features
 
-- Scrapes the Oracle Customers page to get a list of all customers
-- Extracts detailed information for each customer
-- Finds career URLs on customer websites
-- Scrapes job listings from career pages
-- Extracts detailed job descriptions from individual job postings
-- Respects robots.txt and implements rate limiting
-- Handles SSL certificate verification issues
-- Uses multithreading for faster scraping
-- Implements resume functionality to continue from where it left off
-- Tracks visited URLs to avoid re-scraping
-- Modular design with separate components for different responsibilities
+- **Company Information Scraping**: Extract company details and career URLs
+- **Job Listings Scraping**: Extract job listings from career pages
+- **Job Details Scraping**: Extract detailed job information
+- **Platform-Specific Scrapers**: Specialized scrapers for Workday, Lever, and Greenhouse
+- **Parallel Processing**: Multi-threaded job detail scraping
+- **Robust Error Handling**: Comprehensive error handling and logging
+- **Flexible Input/Output**: Support for CSV and JSON input/output
+
+## Installation
+
+1. Clone the repository:
+\`\`\`bash
+git clone https://github.com/yourusername/oracle-customer-scraper.git
+cd oracle-customer-scraper
+\`\`\`
+
+2. Install the required dependencies:
+\`\`\`bash
+pip install -r requirements.txt
+\`\`\`
+
+## Usage
+
+### Basic Usage
+
+\`\`\`bash
+python main.py --input urls.csv --output-dir output
+\`\`\`
+
+### Using Seed URLs
+
+\`\`\`bash
+# First, extract URLs from the seed file
+python url_extractor.py
+
+# Then run the main scraper
+python main.py --input urls.csv --output-dir output
+\`\`\`
+
+### Using the Simplified Runner
+
+\`\`\`bash
+python scraper_runner.py --seed seed_urls.json --output-dir output
+\`\`\`
+
+### Command Line Arguments
+
+- `--input`, `-i`: Input CSV file with URLs (default: urls.csv)
+- `--output-dir`, `-o`: Output directory for scraped data (default: output)
+- `--headless`: Run in headless mode (default: True)
+- `--timeout`: Timeout in seconds (default: 30)
+- `--workers`: Number of parallel workers (default: 5)
+- `--seed`, `-s`: Seed JSON file with Oracle customers (for scraper_runner.py)
+- `--skip-listings`: Skip job listings scraping (for scraper_runner.py)
+- `--skip-details`: Skip job details scraping (for scraper_runner.py)
 
 ## Project Structure
 
-- `main.py`: Entry point for the scraper
-- `logger.py`: Handles logging
-- `error_handler.py`: Handles errors
-- `data_manager.py`: Manages data storage and retrieval
-- `rate_limiter.py`: Implements rate limiting
-- `robots_parser.py`: Checks if crawling is allowed
-- `url_tracker.py`: Tracks visited URLs and manages checkpoints
-- `oracle_customer_scraper.py`: Scrapes the main Oracle customers page
-- `customer_detail_scraper.py`: Scrapes individual customer pages
-- `job_scraper.py`: Extracts career URLs from customer websites
+- `job_scraper.py`: Scrapes company information and career URLs
 - `job_listings_scraper.py`: Scrapes job listings from career pages
-- `job_detail_scraper.py`: Scrapes detailed job descriptions from individual job postings
-- `utils.py`: Utility functions for making requests with SSL fallback
+- `job_detail_scraper.py`: Scrapes detailed job information
+- `platform_scrapers.py`: Contains specialized scrapers for job platforms
+- `main.py`: Main entry point for the scraper
+- `url_extractor.py`: Utility to extract URLs from seed file
+- `scraper_runner.py`: Simplified runner for the scraper
+- `seed_urls.json`: Seed file with Oracle customer information
 
-## Setup
+## Output
 
-1. Install dependencies:
+The scraper generates three JSON files:
 
-\`\`\`bash
-pip install requests beautifulsoup4 playwright
-playwright install chromium
-\`\`\`
+1. `companies.json`: Contains company information and career URLs
+2. `job_listings.json`: Contains job listings from career pages
+3. `job_details.json`: Contains detailed job information
 
-2. Create directories:
+## License
 
-\`\`\`bash
-mkdir -p data logs
-\`\`\`
-
-3. Run the scraper:
-
-\`\`\`bash
-python main.py
-\`\`\`
-
-## Command Line Arguments
-
-- `--rate-limit`: Rate limit in seconds between requests (default: 3)
-- `--limit`: Limit the number of customers to process (default: all)
-- `--data-dir`: Directory to store data files (default: data)
-- `--log-dir`: Directory to store log files (default: logs)
-- `--skip-customers`: Skip scraping the customers list
-- `--skip-details`: Skip scraping customer details
-- `--skip-careers`: Skip scraping career URLs
-- `--skip-job-listings`: Skip scraping job listings
-- `--skip-job-details`: Skip scraping job details
-- `--threads`: Number of threads to use for parallel scraping (default: 5)
-- `--no-resume`: Do not resume from previous checkpoint
-- `--min-customers`: Minimum number of customers expected (default: 100)
-
-## Example Usage
-
-Scrape everything:
-\`\`\`bash
-python main.py
-\`\`\`
-
-Scrape only the first 10 customers:
-\`\`\`bash
-python main.py --limit 10
-\`\`\`
-
-Skip scraping the customers list and use existing data:
-\`\`\`bash
-python main.py --skip-customers
-\`\`\`
-
-Use more threads for faster scraping:
-\`\`\`bash
-python main.py --threads 10
-\`\`\`
-
-Start from scratch (don't resume):
-\`\`\`bash
-python main.py --no-resume
-\`\`\`
-
-Only scrape job listings from existing career URLs:
-\`\`\`bash
-python main.py --skip-customers --skip-details --skip-careers
-\`\`\`
-
-Only scrape job details from existing job listings:
-\`\`\`bash
-python main.py --skip-customers --skip-details --skip-careers --skip-job-listings
-\`\`\`
-
-## Output Files
-
-- `data/customers_list.json`: List of all customers
-- `data/customer_details.json`: Detailed information for each customer
-- `data/career_urls.json`: Career URLs for each customer
-- `data/job_listings.json`: Job listings from career pages
-- `data/job_details.json`: Detailed job descriptions from individual job postings
-- `data/visited_customer_urls.json`: Tracking of visited customer URLs
-- `data/visited_job_urls.json`: Tracking of visited job URLs
-- `data/scraper_checkpoint.json`: Checkpoint for resuming scraping
-
-## Job Details Extraction
-
-The job detail scraper extracts the following information from job postings:
-
-- Full job description
-- Job responsibilities
-- Job requirements/qualifications
-- Benefits and perks
-- Application instructions
-- Company information
-- Salary information (when available)
-- Contact information
-- Application deadline
-- Employment type
-
-The scraper uses multiple methods to extract this information:
-
-1. Section-based extraction using common section identifiers and selectors
-2. Structured data extraction from JSON-LD
-3. Content splitting based on headings
-4. Regular expression patterns for specific information like contact details and salary
-
-## Multithreading
-
-The scraper uses Python's `concurrent.futures` module with ThreadPoolExecutor to parallelize the scraping process. This significantly speeds up the scraping of customer details, career URLs, job listings, and job details. The number of threads can be controlled with the `--threads` command-line argument.
-
-## Resume Functionality
-
-If the scraper is interrupted for any reason, it can resume from where it left off. It maintains a checkpoint file that records the current stage and progress. When restarted, it will load this checkpoint and continue from there. This can be disabled with the `--no-resume` flag.
-
-## URL Tracking
-
-The scraper keeps track of all visited URLs to avoid re-scraping the same pages. This is especially useful when new customers are added to Oracle's website, as the scraper will only process the new ones. The tracking is persistent across runs.
-
-## Notes
-
-- This scraper is designed to be respectful of servers by implementing rate limiting
-- Always check robots.txt before scraping any website
-- SSL certificate verification is disabled for sites with certificate issues
-- This is for educational purposes only
+This project is licensed under the MIT License - see the LICENSE file for details.
