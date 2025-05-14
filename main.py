@@ -1,5 +1,4 @@
 import argparse
-import csv
 import json
 import logging
 import os
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 def main():
     parser = argparse.ArgumentParser(description='Oracle Customer Success Scraper')
     parser.add_argument('--input', '-i', type=str, help='Input CSV file with URLs', default='urls.csv')
-    parser.add_argument('--seed', '-s', type=str, help='Seed JSON file with Oracle customers')
     parser.add_argument('--output-dir', '-o', type=str, help='Output directory for scraped data', default='output')
     parser.add_argument('--headless', action='store_true', help='Run in headless mode', default=True)
     parser.add_argument('--timeout', type=int, help='Timeout in seconds', default=30)
@@ -36,33 +34,11 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Load URLs from either seed JSON or CSV file
-    urls = []
-    if args.seed and args.seed.endswith('.json'):
-        # Load the seed URLs
-        with open(args.seed, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        # Extract URLs from the seed file
-        if 'oracle_customers' in data:
-            urls = [customer['url'] for customer in data['oracle_customers']]
-            logger.info(f"Loaded {len(urls)} URLs from seed file {args.seed}")
-        else:
-            # Assume it's a simple list of URLs
-            urls = data
-            logger.info(f"Loaded {len(urls)} URLs from JSON file {args.seed}")
-    else:
-        # Original CSV loading code
-        with open(args.input, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            urls = [row[0] for row in reader if row]
-        logger.info(f"Loaded {len(urls)} URLs from CSV file {args.input}")
-    
     # Step 1: Scrape customer companies and their career URLs
     logger.info("Step 1: Scraping customer companies and career URLs")
     job_scraper = JobScraper(headless=args.headless, timeout=args.timeout)
     
-    companies = job_scraper.scrape(urls)
+    companies = job_scraper.scrape(args.input)
     job_scraper.save_to_file(companies, os.path.join(args.output_dir, 'companies.json'))
     
     # Extract career URLs from companies
